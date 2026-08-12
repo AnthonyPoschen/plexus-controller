@@ -1,0 +1,52 @@
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: plexus-controller
+  namespace: app-plexus   # or your target namespace for the controller
+spec:
+  image: ghcr.io/anthonyposchen/plexus-controller
+  interval: 1m
+  # secretRef:
+  #   name: docker-secret
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: plexus-controller
+  namespace: app-plexus
+spec:
+  imageRepositoryRef:
+    name: plexus-controller
+  filterTags:
+    pattern: "^master-[a-f0-9]{7}-(?P<timestamp>[0-9]{14})$"
+    extract: "$timestamp"
+  policy:
+    numerical:
+      order: asc
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageUpdateAutomation
+metadata:
+  name: plexus-controller
+  namespace: app-plexus
+spec:
+  interval: 1m
+  sourceRef:
+    kind: GitRepository
+    name: app-plexus   # adjust to your GitRepository name
+    namespace: flux-system
+  git:
+    checkout:
+      ref:
+        branch: master
+    commit:
+      author:
+        name: fluxcdbot
+        email: fluxcdbot@users.noreply.github.com
+      messageTemplate: "chore(images): update plexus-controller image"
+    push:
+      branch: master
+  update:
+    path: ./kustomization/overlays/prod
+    strategy: Setters
