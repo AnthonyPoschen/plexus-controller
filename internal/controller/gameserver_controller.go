@@ -77,6 +77,13 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 	if gameServer.Spec.SelectedSetup == nil {
 		return r.reconcileUnloaded(ctx, &gameServer)
 	}
+	definition, err := games.Get(gameServer.Spec.SelectedSetup.GameID)
+	if err != nil || definition.ID != factorio.GameID {
+		if err == nil {
+			err = fmt.Errorf("game %q does not have a workload reconciler", definition.ID)
+		}
+		return ctrl.Result{}, r.reportPermanentFailure(ctx, &gameServer, "UnsupportedGame", err)
+	}
 	if gameServer.Spec.DesiredPower == plexusv1alpha1.DesiredPowerStopped {
 		handled, result, err := r.quiesceBeforeSecretValidation(ctx, &gameServer)
 		if err != nil || handled {
@@ -88,14 +95,6 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 			return ctrl.Result{}, statusErr
 		}
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
-	definition, err := games.Get(gameServer.Spec.SelectedSetup.GameID)
-	if err != nil || definition.ID != factorio.GameID {
-		if err == nil {
-			err = fmt.Errorf("game %q does not have a workload reconciler", definition.ID)
-		}
-		return ctrl.Result{}, r.reportPermanentFailure(ctx, &gameServer, "UnsupportedGame", err)
 	}
 
 	if _, err := r.ensurePVC(ctx, &gameServer, definition); err != nil {
@@ -439,8 +438,12 @@ func (r *GameServerReconciler) reportPermanentFailure(ctx context.Context, gameS
 }
 
 func (r *GameServerReconciler) reportUnobservedFailure(ctx context.Context, gameServer *plexusv1alpha1.GameServer, reason string, reconcileErr error) error {
-	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseFailed, reconcileErr.Error())
-	status.ObservedGeneration = gameServer.Status.ObservedGeneration
+	status := gameServer.Status
+	status.Conditions = append([]metav1.Condition(nil), gameServer.Status.Conditions...)
+	if status.Phase == "" {
+		status.Phase = plexusv1alpha1.GameServerPhaseFailed
+	}
+	status.Message = reconcileErr.Error()
 	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, reason, reconcileErr.Error())
 	return r.updateStatus(ctx, gameServer, status)
 }

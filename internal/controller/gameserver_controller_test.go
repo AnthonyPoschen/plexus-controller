@@ -186,6 +186,57 @@ func TestFactorioSecretMustValidateBeforeGenerationIsObserved(t *testing.T) {
 	}
 }
 
+func TestFactorioInvalidReplacementSecretPreservesLiveRuntimeStatus(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	gameServer.Generation = 8
+	players := int32(4)
+	gameServer.Status = plexusv1alpha1.GameServerStatus{
+		Phase:                     plexusv1alpha1.GameServerPhaseRunning,
+		ActiveSetupID:             "setup-1",
+		ObservedGeneration:        7,
+		ObservedRestartGeneration: 3,
+		Endpoint:                  "factorio.example.test:34197",
+		Players:                   &players,
+	}
+	reconciler, kubeClient := testReconcilerWithoutSecret(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+
+	reconcileTwice(t, ctx, reconciler, request)
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseRunning ||
+		current.Status.ActiveSetupID != "setup-1" || current.Status.Endpoint != "factorio.example.test:34197" ||
+		current.Status.Players == nil || *current.Status.Players != 4 {
+		t.Fatalf("invalid replacement erased live runtime status: %#v", current.Status)
+	}
+	if current.Status.ObservedGeneration != 7 || current.Status.ObservedRestartGeneration != 3 {
+		t.Fatalf("invalid replacement was observed: %#v", current.Status)
+	}
+	if conditionReason(current, conditionReady) != "SetupSecretInvalid" {
+		t.Fatalf("invalid replacement condition = %#v", current.Status.Conditions)
+	}
+}
+
+func TestUnsupportedGameDoesNotRequireFactorioSecret(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	gameServer.Spec.SelectedSetup.GameID = "project-zomboid"
+	gameServer.Spec.SelectedSetup.Configuration.SchemaVersion = "project-zomboid/v1"
+	reconciler, kubeClient := testReconcilerWithoutSecret(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+
+	reconcileTwice(t, ctx, reconciler, request)
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseFailed || conditionReason(current, conditionReady) != "UnsupportedGame" {
+		t.Fatalf("unsupported game status = %#v", current.Status)
+	}
+	if strings.Contains(current.Status.Message, "Secret") {
+		t.Fatalf("unsupported game incorrectly required a Factorio Secret: %q", current.Status.Message)
+	}
+}
+
 func TestFactorioReconcileRejectsUnownedRuntimeResource(t *testing.T) {
 	ctx := context.Background()
 	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
