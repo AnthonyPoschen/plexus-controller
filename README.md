@@ -42,11 +42,24 @@ See the backend's [docs/game-deployment.md](https://github.com/AnthonyPoschen/pl
 ## Getting Started (Development)
 
 ```bash
-# TODO: add make targets once scaffolding is complete
-make manifests
+go generate ./...
 make install
 make run
 ```
+
+The focused reconciler suite uses a fake Kubernetes client during ordinary test
+runs. A repeatable API-server integration scenario is also available when
+local envtest binaries are installed:
+
+```bash
+go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+export KUBEBUILDER_ASSETS="$(setup-envtest use -p path 1.36.x!)"
+go test ./internal/controller -run TestFactorioRunningStoppedEnvtest -count=1
+```
+
+The scenario installs the generated `GameServer` CRD into envtest, reconciles a
+running Factorio server into a Deployment, Service, and PVC, then requests a
+stop and verifies that the workload is removed while the PVC remains.
 
 ## Links
 

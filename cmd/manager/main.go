@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	plexusv1alpha1 "github.com/AnthonyPoschen/plexus-controller/api/v1alpha1"
+	"github.com/AnthonyPoschen/plexus-controller/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -60,6 +61,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := (&controller.GameServerReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "GameServer")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
