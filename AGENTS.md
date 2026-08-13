@@ -6,7 +6,8 @@ This file captures repository conventions and guidance for the Plexus GameServer
 
 This controller is part of a two-repo system:
 
-- Backend: `/home/zanven/.grok/worktrees/anthonyposchen-plexus/backend`
+- Backend: `github.com/AnthonyPoschen/plexus` (use the matching issue worktree
+  for coordinated cross-repository changes)
   - Owns product, billing, entitlements, catalog, user APIs, desired state, auth, and object storage coordination.
 
 - Controller (this repo): Owns Kubernetes reconciliation, pod/volume/ConfigMap/editor pod lifecycle, and all game-specific runtime behavior.

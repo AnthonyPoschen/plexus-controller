@@ -1,0 +1,345 @@
+{
+  "gameID": "factorio",
+  "version": "factorio/v1",
+  "displayName": "Factorio",
+  "configuration": {
+    "sections": [
+      {
+        "id": "identity",
+        "title": "Server details",
+        "fields": [
+          {
+            "path": "name",
+            "label": "Server name",
+            "description": "Name shown in the Factorio multiplayer browser.",
+            "type": "string",
+            "required": true,
+            "sensitive": false,
+            "default": "Plexus Factorio Server",
+            "constraints": {
+              "minLength": 1,
+              "maxLength": 100
+            }
+          },
+          {
+            "path": "description",
+            "label": "Description",
+            "description": "Description shown to players in the multiplayer browser.",
+            "type": "string",
+            "required": false,
+            "sensitive": false,
+            "constraints": {
+              "maxLength": 500
+            }
+          },
+          {
+            "path": "tags",
+            "label": "Tags",
+            "description": "Searchable tags shown in the multiplayer browser.",
+            "type": "string-list",
+            "required": false,
+            "sensitive": false,
+            "constraints": {
+              "maxItems": 20
+            }
+          }
+        ]
+      },
+      {
+        "id": "access",
+        "title": "Access and visibility",
+        "fields": [
+          {
+            "path": "maxPlayers",
+            "label": "Maximum players",
+            "description": "Maximum concurrent players; 0 allows Factorio's default unlimited player count.",
+            "type": "integer",
+            "required": true,
+            "sensitive": false,
+            "default": 0,
+            "constraints": {
+              "minimum": 0,
+              "maximum": 65535
+            }
+          },
+          {
+            "path": "visibility.public",
+            "label": "Public listing",
+            "description": "List this server in Factorio's public multiplayer browser.",
+            "type": "boolean",
+            "required": true,
+            "sensitive": false,
+            "default": true
+          },
+          {
+            "path": "visibility.lan",
+            "label": "LAN visibility",
+            "description": "Advertise this server to local-network discovery.",
+            "type": "boolean",
+            "required": true,
+            "sensitive": false,
+            "default": true
+          },
+          {
+            "path": "requireUserVerification",
+            "label": "Verify player identity",
+            "description": "Require Factorio account verification for joining players.",
+            "type": "boolean",
+            "required": true,
+            "sensitive": false,
+            "default": true
+          },
+          {
+            "path": "allowCommands",
+            "label": "Console commands",
+            "description": "Choose who may run Lua commands that can alter the save.",
+            "type": "string",
+            "required": true,
+            "sensitive": false,
+            "default": "admins-only",
+            "options": [
+              {
+                "value": "admins-only",
+                "label": "Admins only"
+              },
+              {
+                "value": "true",
+                "label": "Everyone"
+              },
+              {
+                "value": "false",
+                "label": "Disabled"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "saving",
+        "title": "Saving and idle behavior",
+        "fields": [
+          {
+            "path": "autosave.intervalMinutes",
+            "label": "Autosave interval",
+            "description": "Minutes between automatic saves.",
+            "type": "integer",
+            "required": true,
+            "sensitive": false,
+            "default": 10,
+            "constraints": {
+              "minimum": 1,
+              "maximum": 1440
+            }
+          },
+          {
+            "path": "autosave.slots",
+            "label": "Autosave slots",
+            "description": "Number of rotating autosaves to retain.",
+            "type": "integer",
+            "required": true,
+            "sensitive": false,
+            "default": 5,
+            "constraints": {
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "path": "afkAutokickMinutes",
+            "label": "AFK auto-kick",
+            "description": "Minutes before an inactive player is removed; 0 disables auto-kick.",
+            "type": "integer",
+            "required": true,
+            "sensitive": false,
+            "default": 0,
+            "constraints": {
+              "minimum": 0,
+              "maximum": 10080
+            }
+          },
+          {
+            "path": "autoPause",
+            "label": "Pause when empty",
+            "description": "Pause simulation when no players are connected.",
+            "type": "boolean",
+            "required": true,
+            "sensitive": false,
+            "default": true
+          },
+          {
+            "path": "onlyAdminsCanPause",
+            "label": "Admin-only pause",
+            "description": "Allow only administrators to pause manually.",
+            "type": "boolean",
+            "required": true,
+            "sensitive": false,
+            "default": true
+          },
+          {
+            "path": "autosaveOnlyOnServer",
+            "label": "Server-only autosaves",
+            "description": "Keep multiplayer autosaves on the hosted server.",
+            "type": "boolean",
+            "required": true,
+            "sensitive": false,
+            "default": true
+          },
+          {
+            "path": "nonBlockingSaving",
+            "label": "Non-blocking saves",
+            "description": "Use Factorio's non-blocking save mode when supported by the host.",
+            "type": "boolean",
+            "required": true,
+            "sensitive": false,
+            "default": false
+          }
+        ]
+      }
+    ]
+  },
+  "secrets": {
+    "version": "factorio-secrets/v1",
+    "fields": [
+      {
+        "path": "username",
+        "label": "Factorio username",
+        "description": "Factorio account name used for authenticated public listing and mod access.",
+        "type": "secret",
+        "required": false,
+        "sensitive": true,
+        "constraints": {
+          "maxLength": 100
+        }
+      },
+      {
+        "path": "token",
+        "label": "Factorio token",
+        "description": "Factorio account token paired with the username.",
+        "type": "secret",
+        "required": false,
+        "sensitive": true,
+        "constraints": {
+          "maxLength": 256
+        }
+      },
+      {
+        "path": "gamePassword",
+        "label": "Game password",
+        "description": "Optional password players must enter before joining.",
+        "type": "secret",
+        "required": false,
+        "sensitive": true,
+        "constraints": {
+          "maxLength": 128
+        }
+      },
+      {
+        "path": "rconPassword",
+        "label": "RCON password",
+        "description": "Platform-generated credential for the managed interactive console.",
+        "type": "secret",
+        "required": true,
+        "sensitive": true,
+        "generated": true,
+        "constraints": {
+          "minLength": 16,
+          "maxLength": 128
+        }
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "configuration",
+      "released": false,
+      "description": "Tailored server settings backed by the typed Factorio configuration."
+    },
+    {
+      "id": "mods",
+      "released": false,
+      "description": "Provider-backed Factorio mod management."
+    },
+    {
+      "id": "saves",
+      "released": false,
+      "description": "Validated save import and export."
+    },
+    {
+      "id": "console",
+      "released": false,
+      "description": "Interactive Factorio administration over RCON."
+    },
+    {
+      "id": "logs",
+      "released": false,
+      "description": "Read-only container and Factorio log output."
+    }
+  ],
+  "runtime": {
+    "channels": [
+      {
+        "id": "rcon",
+        "label": "Game console",
+        "interaction": "interactive",
+        "protocol": "rcon",
+        "released": false
+      },
+      {
+        "id": "container-stdout",
+        "label": "Server output",
+        "interaction": "read-only",
+        "protocol": "container-stdout",
+        "released": false
+      },
+      {
+        "id": "factorio-log",
+        "label": "Factorio log",
+        "interaction": "read-only",
+        "protocol": "file",
+        "released": false
+      }
+    ]
+  },
+  "shutdown": {
+    "strategy": "rcon-command",
+    "command": "/quit",
+    "timeoutSeconds": 90,
+    "forceSupported": true
+  },
+  "saves": {
+    "importReleased": false,
+    "exportReleased": false,
+    "requiresStopped": true,
+    "destructiveImport": true,
+    "leavesServerStopped": true,
+    "archiveFormat": "zip",
+    "mediaTypes": [
+      "application/zip"
+    ],
+    "fileExtensions": [
+      ".zip"
+    ],
+    "requiredEntries": [
+      "level.dat",
+      "level-init.dat"
+    ],
+    "maximumArchiveBytes": 2147483648,
+    "maximumExpandedBytes": 8589934592,
+    "maximumEntries": 100000
+  },
+  "mods": {
+    "providerID": "factorio-mod-portal",
+    "providerName": "Factorio Mod Portal",
+    "providerURL": "https://mods.factorio.com",
+    "released": false,
+    "nativeDiscovery": true,
+    "directReference": true,
+    "dependencyResolution": "provider-metadata",
+    "versionSelection": "latest-compatible",
+    "compatibility": "factorio-version",
+    "applyPolicy": "next-start",
+    "requiresStopped": true,
+    "automaticRestart": false,
+    "clientSynchronization": "join-time"
+  }
+}
