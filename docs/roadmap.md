@@ -39,6 +39,11 @@ Exit criteria:
 
 ### Phase 1: Basic Reconciliation (MVP Game)
 
+The first Factorio tracer now reconciles a Deployment, LoadBalancer Service,
+and persistent volume; reports Provisioning, Running, Stopped, and Failed
+observations; and removes the workload and public endpoint while retaining
+storage on stop. Configuration rendering remains Phase 2 work.
+
 - Implement a `GameServerReconciler` that can create a Deployment + Service + PVC for one game (start with Factorio or Project Zomboid).
 - Use a simple embedded or ConfigMap-sourced `GameRuntimeProfile`.
 - Basic status updates (phase, observedGeneration).
