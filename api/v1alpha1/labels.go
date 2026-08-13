@@ -8,4 +8,5 @@ const (
 	LabelServerID    = "plexus.gg/server-id"
 	LabelOwnerUserID = "plexus.gg/owner-user-id"
 	LabelGameID      = "plexus.gg/game-id"
+	LabelSetupID     = "plexus.gg/setup-id"
 )

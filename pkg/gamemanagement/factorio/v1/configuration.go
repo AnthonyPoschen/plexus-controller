@@ -9,9 +9,12 @@ import (
 )
 
 const (
-	GameID              = "factorio"
-	SchemaVersion       = "factorio/v1"
-	SecretSchemaVersion = "factorio-secrets/v1"
+	GameID                   = "factorio"
+	SchemaVersion            = "factorio/v1"
+	SecretSchemaVersion      = "factorio-secrets/v1"
+	SecretDataKey            = "secrets.json"
+	SecretSchemaAnnotation   = "plexus.gg/secret-schema-version"
+	SecretRevisionAnnotation = "plexus.gg/secret-revision"
 
 	minimumNameLength         = 1
 	maximumNameLength         = 100

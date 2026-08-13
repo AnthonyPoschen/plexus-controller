@@ -70,6 +70,15 @@ a versioned envelope, with sensitive values held in a referenced setup-scoped
 Secret. Backend and controller consume the same controller-owned versioned game
 management/secret schema library.
 
+Before acknowledging a selected setup generation, the controller requires the
+same-namespace Secret to be immutable, labeled for that server, owner, game, and
+setup, annotated with the pinned schema and a positive revision, and to contain
+exactly one `secrets.json` document accepted by the adapter decoder. Validation
+errors never include document contents. A missing or invalid replacement does
+not advance `status.observedGeneration`, allowing the backend to retain the
+previous Secret safely. Stopped intent still removes the workload and public
+Service before validation so a bad Secret cannot prevent shutdown.
+
 The authoritative `v1alpha1` envelope is:
 
 ```yaml

@@ -63,6 +63,9 @@ func TestFactorioRunningStoppedEnvtest(t *testing.T) {
 	gameServer.UID = ""
 	gameServer.ResourceVersion = ""
 	gameServer.Generation = 0
+	if err := kubeClient.Create(ctx, testSetupSecret(gameServer)); err != nil {
+		t.Fatal(err)
+	}
 	if err := kubeClient.Create(ctx, gameServer); err != nil {
 		t.Fatal(err)
 	}
