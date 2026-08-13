@@ -20,7 +20,7 @@ Game-specific behavior and safety rules live here, not in the customer-facing ba
 
 This controller is the runtime half of a two-repo architecture:
 
-- **Backend** (`/home/zanven/.grok/worktrees/anthonyposchen-plexus/backend`): Product, billing, entitlements, catalog, user-facing APIs, authentication, desired state authoring, object storage coordination, and audit.
+- **Backend** (`github.com/AnthonyPoschen/plexus`): Product, billing, entitlements, catalog, user-facing APIs, authentication, desired state authoring, object storage coordination, and audit.
 - **Controller** (this repo): Kubernetes reconciliation, pod/volume lifecycle, editor pods, ConfigMap rendering, and all game-specific runtime details.
 
 When working on provisioning, runtime behavior, file management, or the `GameServer` CRD, **consult both repositories**.

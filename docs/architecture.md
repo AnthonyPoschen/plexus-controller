@@ -115,6 +115,28 @@ The backend catalog only needs high-level marketing + "recommended offering" dat
 
 See `internal/games/types.go` for the current structure (including `CalculateDiskSize` and `ConfigLayer` templates).
 
+### Shared management contracts
+
+Versioned customer-management contracts live under `pkg/gamemanagement/` so
+the controller and backend compile against the same Go types and policies. The
+registry exposes schemas without requiring a running controller. Factorio's
+first contract is `pkg/gamemanagement/factorio/v1` and owns its typed
+configuration and secrets, management form schema, capability release flags,
+runtime channels, shutdown policy, save-archive validation, and mod-provider
+policy.
+
+Serialized schemas are compatibility surfaces. Adapter changes must update the
+controller golden serialization test and use a new versioned package for
+incompatible changes. The backend pins a released controller module and keeps
+an independent response checksum so dependency upgrades require deliberate
+review in both repositories.
+
+Save-policy `requiredEntries` values are required basenames, not fixed archive
+paths. Factorio save imports normally place those files beneath one safe,
+consistent top-level save directory. The Factorio v1 validator also accepts
+them directly at archive root for compatibility with previously supported
+archives.
+
 ### Design Options Considered
 
 - **Controller owns definitions** (chosen): All defaults + disk math live in Go code here. Strong consistency, easy to test and evolve per game. Disk sizing happens naturally during reconciliation/creation.

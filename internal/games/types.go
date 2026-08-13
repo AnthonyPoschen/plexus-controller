@@ -2,13 +2,16 @@ package games
 
 import (
 	"fmt"
+
+	factorio "github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/factorio/v1"
 )
 
 // GameDefinition contains all the controller-owned defaults and behavior
 // for a specific game. This is the source of truth for runtime details
 // inside the controller.
 type GameDefinition struct {
-	ID string
+	ID                      string
+	ManagementSchemaVersion string
 
 	// Display is mostly for logs / status
 	DisplayName string
@@ -68,13 +71,14 @@ type ConfigTemplate struct {
 
 // Registry holds all known games. This is where defaults live in the controller.
 var Registry = map[string]GameDefinition{
-	"factorio": {
-		ID:                 "factorio",
-		DisplayName:        "Factorio",
-		DefaultImage:       "factoriotools/factorio:stable",
-		MinDiskGiB:         10,
-		RecommendedDiskGiB: 50,
-		RawDiskPaths:       []string{"/saves", "/mods"},
+	factorio.GameID: {
+		ID:                      factorio.GameID,
+		ManagementSchemaVersion: factorio.SchemaVersion,
+		DisplayName:             "Factorio",
+		DefaultImage:            "factoriotools/factorio:stable",
+		MinDiskGiB:              10,
+		RecommendedDiskGiB:      50,
+		RawDiskPaths:            []string{"/saves", "/mods"},
 		DefaultEnv: map[string]string{
 			"FACTORIO_SERVER_NAME": "Plexus Factorio Server",
 		},

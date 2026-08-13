@@ -49,6 +49,12 @@ Exit criteria:
 
 ### Phase 2: Config Layer (ConfigMaps)
 
+Foundation delivered: the controller-owned `factorio/v1` game-management
+contract now provides the typed configuration/secret boundary and serialized
+schema consumed by both repositories. Reconciliation and customer mutation
+work remain in this phase and must use that contract rather than introduce a
+second Factorio schema.
+
 - Define the first `GameRuntimeProfile` entries with explicit config file mappings.
 - Controller renders ConfigMaps (and mounts them into the game pod).
 - Support backend-driven versioned structured configuration and referenced
@@ -126,9 +132,9 @@ The `GameServer` CR (plus narrow supporting mechanisms for editor sessions) is t
 
 ## Cross-Repo Linkage
 
-When making changes here, also consider impact on (and required updates in) the backend repository at:
-
-`/home/zanven/.grok/worktrees/anthonyposchen-plexus/backend`
+When making changes here, also consider impact on (and required updates in) the
+`github.com/AnthonyPoschen/plexus` backend repository, using its matching issue
+worktree for coordinated changes.
 
 See the backend's `docs/game-deployment.md`, `docs/roadmap.md`, and the disk proxy implementation plan for full context.
 
