@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -15,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	plexusv1alpha1 "github.com/AnthonyPoschen/plexus-controller/api/v1alpha1"
+	factorio "github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/factorio/v1"
 )
 
 func TestFactorioReconcileRunningThenStopped(t *testing.T) {
@@ -135,6 +137,55 @@ func TestFactorioReconcileReportsFailedForInvalidSchema(t *testing.T) {
 	}
 }
 
+func TestFactorioSecretMustValidateBeforeGenerationIsObserved(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerStopped)
+	gameServer.Generation = 7
+	gameServer.Status.ObservedGeneration = 6
+	reconciler, kubeClient := testReconcilerWithoutSecret(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+
+	reconcileTwice(t, ctx, reconciler, request)
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.ObservedGeneration != 6 {
+		t.Fatalf("missing Secret generation was acknowledged: %#v", current.Status)
+	}
+	if conditionReason(current, conditionReady) != "SetupSecretInvalid" {
+		t.Fatalf("missing Secret condition = %#v", current.Status.Conditions)
+	}
+
+	secret := testSetupSecret(gameServer)
+	secret.Data[factorio.SecretDataKey] = []byte(`{"token":"must-not-appear-in-status","rconPassword":"long-enough-generated-password"}`)
+	if err := kubeClient.Create(ctx, secret); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if strings.Contains(current.Status.Message, "must-not-appear-in-status") {
+		t.Fatalf("invalid Secret material reached status: %q", current.Status.Message)
+	}
+	if current.Status.ObservedGeneration != 6 {
+		t.Fatalf("invalid Secret generation was acknowledged: %#v", current.Status)
+	}
+
+	replacement := testSetupSecret(gameServer)
+	replacement.Name = "setup-1-secrets-r2"
+	replacement.Annotations[factorio.SecretRevisionAnnotation] = "2"
+	if err := kubeClient.Create(ctx, replacement); err != nil {
+		t.Fatal(err)
+	}
+	current.Spec.SelectedSetup.Configuration.SecretRef.Name = replacement.Name
+	current.Generation = 8
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.ObservedGeneration != 8 || current.Status.Phase != plexusv1alpha1.GameServerPhaseStopped {
+		t.Fatalf("valid Secret was not acknowledged: %#v", current.Status)
+	}
+}
+
 func TestFactorioReconcileRejectsUnownedRuntimeResource(t *testing.T) {
 	ctx := context.Background()
 	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
@@ -196,6 +247,15 @@ func testGameServer(power plexusv1alpha1.DesiredPower) *plexusv1alpha1.GameServe
 }
 
 func testReconciler(t *testing.T, objects ...client.Object) (*GameServerReconciler, client.Client) {
+	for _, object := range append([]client.Object(nil), objects...) {
+		if gameServer, ok := object.(*plexusv1alpha1.GameServer); ok && gameServer.Spec.SelectedSetup != nil {
+			objects = append(objects, testSetupSecret(gameServer))
+		}
+	}
+	return testReconcilerWithoutSecret(t, objects...)
+}
+
+func testReconcilerWithoutSecret(t *testing.T, objects ...client.Object) (*GameServerReconciler, client.Client) {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -208,6 +268,23 @@ func testReconciler(t *testing.T, objects ...client.Object) (*GameServerReconcil
 		WithStatusSubresource(&plexusv1alpha1.GameServer{}, &appsv1.Deployment{}, &corev1.Service{}).
 		WithObjects(objects...).Build()
 	return &GameServerReconciler{Client: kubeClient, Scheme: scheme}, kubeClient
+}
+
+func testSetupSecret(gameServer *plexusv1alpha1.GameServer) *corev1.Secret {
+	immutable := true
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: gameServer.Spec.SelectedSetup.Configuration.SecretRef.Name, Namespace: gameServer.Namespace,
+			Labels: map[string]string{
+				plexusv1alpha1.LabelServerID: gameServer.Spec.ServerID, plexusv1alpha1.LabelOwnerUserID: gameServer.Spec.OwnerUserID,
+				plexusv1alpha1.LabelGameID: gameServer.Spec.SelectedSetup.GameID, plexusv1alpha1.LabelSetupID: gameServer.Spec.SelectedSetup.ID,
+			},
+			Annotations: map[string]string{factorio.SecretSchemaAnnotation: factorio.SecretSchemaVersion, factorio.SecretRevisionAnnotation: "1"},
+		},
+		Immutable: &immutable,
+		Type:      corev1.SecretTypeOpaque,
+		Data:      map[string][]byte{factorio.SecretDataKey: []byte(`{"rconPassword":"long-enough-generated-password"}`)},
+	}
 }
 
 func reconcileTwice(t *testing.T, ctx context.Context, reconciler *GameServerReconciler, request ctrl.Request) {

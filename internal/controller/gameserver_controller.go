@@ -8,6 +8,7 @@ import (
 	"maps"
 	"reflect"
 	"sort"
+	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -51,6 +52,7 @@ type GameServerReconciler struct {
 // +kubebuilder:rbac:groups=plexus.gg,resources=gameservers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
 	var gameServer plexusv1alpha1.GameServer
@@ -75,6 +77,18 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 	if gameServer.Spec.SelectedSetup == nil {
 		return r.reconcileUnloaded(ctx, &gameServer)
 	}
+	if gameServer.Spec.DesiredPower == plexusv1alpha1.DesiredPowerStopped {
+		handled, result, err := r.quiesceBeforeSecretValidation(ctx, &gameServer)
+		if err != nil || handled {
+			return result, err
+		}
+	}
+	if err := r.validateSetupSecret(ctx, &gameServer); err != nil {
+		if statusErr := r.reportUnobservedFailure(ctx, &gameServer, "SetupSecretInvalid", err); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
 
 	definition, err := games.Get(gameServer.Spec.SelectedSetup.GameID)
 	if err != nil || definition.ID != factorio.GameID {
@@ -92,6 +106,61 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 		return r.reconcileStopped(ctx, &gameServer)
 	}
 	return r.reconcileRunning(ctx, &gameServer, definition)
+}
+
+func (r *GameServerReconciler) quiesceBeforeSecretValidation(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (bool, ctrl.Result, error) {
+	deploymentDeleted, err := r.deleteDeployment(ctx, gameServer)
+	if err != nil {
+		return true, ctrl.Result{}, r.reportUnobservedFailure(ctx, gameServer, "WorkloadStopFailed", err)
+	}
+	serviceDeleted, err := r.deleteService(ctx, gameServer)
+	if err != nil {
+		return true, ctrl.Result{}, r.reportUnobservedFailure(ctx, gameServer, "ServiceCleanupFailed", err)
+	}
+	if deploymentDeleted == false && serviceDeleted == false {
+		return false, ctrl.Result{}, nil
+	}
+	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStopping, "Stopping the Factorio workload before validating sensitive configuration")
+	status.ObservedGeneration = gameServer.Status.ObservedGeneration
+	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "WorkloadStopping", "Factorio is being stopped before the replacement setup Secret is acknowledged")
+	if err := r.updateStatus(ctx, gameServer, status); err != nil {
+		return true, ctrl.Result{}, err
+	}
+	return true, ctrl.Result{RequeueAfter: time.Second}, nil
+}
+
+func (r *GameServerReconciler) validateSetupSecret(ctx context.Context, gameServer *plexusv1alpha1.GameServer) error {
+	setup := gameServer.Spec.SelectedSetup
+	secret := &corev1.Secret{}
+	key := client.ObjectKey{Namespace: gameServer.Namespace, Name: setup.Configuration.SecretRef.Name}
+	if err := r.Get(ctx, key, secret); err != nil {
+		return fmt.Errorf("read referenced setup Secret %q: %w", key.Name, err)
+	}
+	if secret.Labels[plexusv1alpha1.LabelServerID] != gameServer.Spec.ServerID ||
+		secret.Labels[plexusv1alpha1.LabelOwnerUserID] != gameServer.Spec.OwnerUserID ||
+		secret.Labels[plexusv1alpha1.LabelGameID] != setup.GameID || secret.Labels[plexusv1alpha1.LabelSetupID] != setup.ID {
+		return fmt.Errorf("referenced setup Secret %q has different ownership", key.Name)
+	}
+	if secret.Annotations[factorio.SecretSchemaAnnotation] != factorio.SecretSchemaVersion {
+		return fmt.Errorf("referenced setup Secret %q does not use schema %q", key.Name, factorio.SecretSchemaVersion)
+	}
+	revision, err := strconv.ParseInt(secret.Annotations[factorio.SecretRevisionAnnotation], 10, 64)
+	if err != nil || revision < 1 {
+		return fmt.Errorf("referenced setup Secret %q has an invalid revision", key.Name)
+	}
+	if secret.Immutable == nil || *secret.Immutable == false {
+		return fmt.Errorf("referenced setup Secret %q must be immutable", key.Name)
+	}
+	if secret.Type != corev1.SecretTypeOpaque {
+		return fmt.Errorf("referenced setup Secret %q must use type Opaque", key.Name)
+	}
+	if len(secret.Data) != 1 {
+		return fmt.Errorf("referenced setup Secret %q has unexpected data keys", key.Name)
+	}
+	if _, err := factorio.DecodeSecrets(secret.Data[factorio.SecretDataKey]); err != nil {
+		return fmt.Errorf("referenced setup Secret %q does not match the pinned adapter schema", key.Name)
+	}
+	return nil
 }
 
 func (r *GameServerReconciler) SetupWithManager(manager ctrl.Manager) error {
@@ -367,6 +436,13 @@ func (r *GameServerReconciler) reportFailure(ctx context.Context, gameServer *pl
 
 func (r *GameServerReconciler) reportPermanentFailure(ctx context.Context, gameServer *plexusv1alpha1.GameServer, reason string, reconcileErr error) error {
 	return r.updateFailedStatus(ctx, gameServer, reason, reconcileErr)
+}
+
+func (r *GameServerReconciler) reportUnobservedFailure(ctx context.Context, gameServer *plexusv1alpha1.GameServer, reason string, reconcileErr error) error {
+	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseFailed, reconcileErr.Error())
+	status.ObservedGeneration = gameServer.Status.ObservedGeneration
+	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, reason, reconcileErr.Error())
+	return r.updateStatus(ctx, gameServer, status)
 }
 
 func (r *GameServerReconciler) updateFailedStatus(ctx context.Context, gameServer *plexusv1alpha1.GameServer, reason string, reconcileErr error) error {
