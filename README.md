@@ -2,7 +2,7 @@
 
 The Plexus GameServer controller.
 
-This repository contains the Kubernetes operator that reconciles `GameServer` custom resources (created by the Plexus backend) into actual Kubernetes workloads: Deployments/StatefulSets, Services, PersistentVolumeClaims, ConfigMaps, Secrets, and short-lived "editor" pods for safe file management.
+This repository contains the Kubernetes operator that reconciles `GameServer` custom resources (created by the Plexus backend) into actual Kubernetes workloads: Deployments/StatefulSets, Services, PersistentVolumeClaims, ConfigMaps, use of backend-published setup-scoped Secrets, and short-lived "editor" pods for safe file management.
 
 ## Purpose
 
@@ -31,7 +31,10 @@ See the backend's [docs/game-deployment.md](https://github.com/AnthonyPoschen/pl
 
 - The `servers` table in the backend SQLite database is the durable product source of truth.
 - The `GameServer` CR is the desired-state handoff to Kubernetes.
-- Most configuration is delivered via ConfigMaps (editable while the server runs; restart required to apply).
+- Most configuration is delivered via ConfigMaps from the selected setup's
+  versioned structured values (saved only while stopped and applied on Start).
+- Sensitive configuration is read only from the setup-scoped Secret referenced
+  by the `GameServer`; it is never embedded in the custom resource.
 - Raw disk mutation (mods, world saves, arbitrary files on the PVC) requires the main game server to be stopped. A temporary editor pod that mounts the same PVC is provisioned for interactive browser-based file management.
 - Large archive transfers use short-lived pre-signed object storage URLs; the controller performs the safe copy only in a stopped state.
 - The backend never talks directly to pods or PVCs. It goes through the controller (CRs + editor sessions).

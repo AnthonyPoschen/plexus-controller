@@ -17,8 +17,11 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.gameID
+    - jsonPath: .spec.selectedSetup.gameID
       name: Game
+      type: string
+    - jsonPath: .spec.desiredPower
+      name: Desired
       type: string
     - jsonPath: .status.phase
       name: Phase
@@ -50,79 +53,128 @@ spec:
             type: object
           spec:
             description: |-
-              GameServerSpec defines the desired state of GameServer.
-
-              Most game-specific defaults (image, environment, minimum disk, config templates,
-              which paths are raw-disk-only, etc.) live in the controller's internal game
-              definitions (see internal/games in the controller repo). The controller applies
-              these at reconciliation / creation time.
-
-              The CRD stays relatively small and generic. Game-specific user choices go
-              into GameConfig.
+              GameServerSpec defines the desired runtime state of one stable customer
+              Server. A Server may be unloaded by omitting SelectedSetup, but its desired
+              power must then remain Stopped.
             properties:
               computePlanID:
-                description: |-
-                  ComputePlanID references the purchased base node plan.
-                  The controller uses this + HighPerformance + the game definition to
-                  determine final resource requests (including disk at spin-up time).
+                description: ComputePlanID references the purchased base node plan.
+                type: string
+              desiredPower:
+                description: DesiredPower is the customer's durable Running or Stopped
+                  intent.
+                enum:
+                - Running
+                - Stopped
                 type: string
               highPerformance:
                 description: |-
                   HighPerformance enables the plan's additional CPU scheduling priority and
                   memory entitlement without changing its burst CPU ceiling.
                 type: boolean
-              gameConfig:
-                additionalProperties:
-                  type: string
-                description: |-
-                  GameConfig holds user-provided, game-specific settings.
-                  The controller looks up the GameDefinition for spec.gameID and uses its
-                  ConfigLayer templates to turn these values into ConfigMaps (the preferred
-                  "config layer").
-                type: object
-              gameID:
-                description: GameID identifies which game (e.g. "factorio", "project-zomboid").
-                type: string
-              image:
-                description: |-
-                  Image allows overriding the container image the controller would normally
-                  choose for this gameID.
-                type: string
               location:
                 description: |-
                   Location is the desired configured location within Region (for example,
-                  "sydney"). Admin assignments may use configured testing locations before
-                  they become publicly available.
+                  "sydney").
                 type: string
               ownerUserID:
-                description: OwnerUserID is the backend user who owns this server.
+                description: OwnerUserID is the backend user who owns this Server.
+                minLength: 1
                 type: string
               region:
-                description: Region is the desired broad deployment region (for example, "australia").
+                description: Region is the desired broad deployment region (for example,
+                  "australia").
                 type: string
+              restartGeneration:
+                description: |-
+                  RestartGeneration is incremented to request another restart of the same
+                  selected setup while leaving DesiredPower Running.
+                format: int64
+                minimum: 0
+                type: integer
+              selectedSetup:
+                description: |-
+                  SelectedSetup is the one saved setup this Server will run. It is omitted
+                  when the Server is unloaded; retained setup data remains independent.
+                properties:
+                  configuration:
+                    description: |-
+                      Configuration contains structured, non-sensitive values and a reference
+                      to this setup's sensitive values.
+                    properties:
+                      schemaVersion:
+                        description: SchemaVersion selects the versioned game-management
+                          configuration schema.
+                        minLength: 1
+                        type: string
+                      secretRef:
+                        description: |-
+                          SecretRef names a Secret in the GameServer namespace that belongs only to
+                          this selected setup and conforms to the adapter's versioned secret schema.
+                        properties:
+                          name:
+                            description: Name is the Kubernetes Secret name.
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      values:
+                        description: |-
+                          Values contains structured JSON/YAML, not a rendered configuration file.
+                          Sensitive values must never be placed here.
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                    required:
+                    - schemaVersion
+                    - secretRef
+                    - values
+                    type: object
+                  gameID:
+                    description: GameID selects the controller-owned game adapter.
+                    minLength: 1
+                    type: string
+                  id:
+                    description: ID is the stable backend identifier of the selected
+                      saved setup.
+                    minLength: 1
+                    type: string
+                required:
+                - configuration
+                - gameID
+                - id
+                type: object
               serverID:
                 description: ServerID is the stable identifier from the backend database.
+                minLength: 1
                 type: string
-              storage:
-                description: |-
-                  Storage allows the user (or backend) to request a specific persistent
-                  volume size. The controller will ensure the final size meets the game's
-                  minimums + the compute plan (see internal/games.CalculateDiskSize).
-                properties:
-                  size:
-                    type: string
-                type: object
+              shutdownMode:
+                description: ShutdownMode selects graceful shutdown or an explicit
+                  force-stop intent.
+                enum:
+                - Graceful
+                - Force
+                type: string
             required:
-            - gameID
+            - desiredPower
             - ownerUserID
             - serverID
+            - shutdownMode
             type: object
+            x-kubernetes-validations:
+            - message: desiredPower must be Stopped when selectedSetup is omitted
+              rule: has(self.selectedSetup) || self.desiredPower == 'Stopped'
           status:
-            description: GameServerStatus defines the observed state of GameServer.
+            description: GameServerStatus defines the controller's latest observed
+              runtime state.
             properties:
+              activeSetupID:
+                description: ActiveSetupID is the setup the runtime has actually activated.
+                type: string
               conditions:
-                description: Conditions represent the latest available observations
-                  of the GameServer's state.
+                description: |-
+                  Conditions represent the latest observations of individual runtime
+                  concerns.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -178,13 +230,16 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               endpoint:
                 description: Endpoint is the public address players can connect to
-                  (if running).
+                  when available.
                 type: string
-              lastReadyAt:
-                description: LastReadyAt is when the game server last reported as
-                  ready/healthy.
+              lastObservedAt:
+                description: LastObservedAt is when this status was last refreshed
+                  from runtime state.
                 format: date-time
                 type: string
               message:
@@ -192,20 +247,36 @@ spec:
                   state.
                 type: string
               observedGeneration:
-                description: ObservedGeneration is the most recent generation the
-                  controller has observed.
+                description: ObservedGeneration is the latest GameServer metadata
+                  generation observed.
                 format: int64
+                minimum: 0
+                type: integer
+              observedRestartGeneration:
+                description: ObservedRestartGeneration is the latest restart request
+                  observed.
+                format: int64
+                minimum: 0
                 type: integer
               phase:
-                description: Phase is a high-level summary of where the GameServer
-                  is in its lifecycle.
+                description: Phase is the observed lifecycle phase, independent of
+                  desired power.
                 enum:
-                - Pending
-                - Running
+                - Unknown
+                - Provisioning
                 - Stopped
+                - Starting
+                - Running
+                - Stopping
                 - Failed
-                - EditorActive
                 type: string
+              players:
+                description: |-
+                  Players is the latest observed connected-player count. Nil means the
+                  controller did not observe a count.
+                format: int32
+                minimum: 0
+                type: integer
             type: object
         type: object
     served: true

@@ -11,6 +11,10 @@ Plexus treats the backend database as the product and entitlement source of trut
 
 The `GameServer` CR is the narrow contract between the two.
 
+One stable `GameServer` always represents one customer Server. Clearing its
+selected setup unloads it without deleting the resource or retained setup data;
+an unloaded Server is valid only with `spec.desiredPower: Stopped`.
+
 ## Two-Layer File & Config Model
 
 ### 1. Config Layer (ConfigMaps) — Preferred for most settings
@@ -65,6 +69,49 @@ Game-specific configuration values use structured `runtime.RawExtension` inside
 a versioned envelope, with sensitive values held in a referenced setup-scoped
 Secret. Backend and controller consume the same controller-owned versioned game
 management/secret schema library.
+
+The authoritative `v1alpha1` envelope is:
+
+```yaml
+spec:
+  serverID: "server uuid"
+  ownerUserID: "user uuid"
+  desiredPower: Running
+  computePlanID: standard-forge
+  highPerformance: true
+  region: australia
+  location: sydney
+  selectedSetup: # optional only while desiredPower is Stopped
+    id: "setup uuid"
+    gameID: factorio
+    configuration:
+      schemaVersion: factorio/v1
+      values: # runtime.RawExtension; structured, non-sensitive values only
+        maxPlayers: 20
+        autosave:
+          intervalMinutes: 10
+      secretRef: # same namespace and scoped to this setup
+        name: setup-uuid-secrets-v2
+  restartGeneration: 4
+  shutdownMode: Graceful
+status:
+  phase: Running
+  activeSetupID: "setup uuid"
+  observedGeneration: 12
+  observedRestartGeneration: 4
+  endpoint: "example.plexus.gg"
+  players: 6
+  lastObservedAt: "2026-08-13T12:00:00Z"
+  message: ""
+  conditions: []
+```
+
+`desiredPower` is `Running` or `Stopped`; `shutdownMode` is `Graceful` or
+`Force`. Observed `phase` is one of `Unknown`, `Provisioning`, `Stopped`,
+`Starting`, `Running`, `Stopping`, or `Failed`. Restart intent is an incremented
+generation rather than a transient command. Status separately reports which
+resource and restart generations were observed, so accepting desired state
+never claims convergence.
 
 ### Customer / Owner Lookup
 
@@ -151,9 +198,13 @@ The current direction favors moving intelligence into the controller and keeping
 The controller is responsible for keeping `GameServer.status` accurate so the backend dashboard can show customers a merged view:
 
 - Entitlement state from SQLite (backend)
-- Runtime health, endpoint, phase, and editor session state from the CR (controller)
+- Runtime phase, active setup, observed generations, endpoint, players,
+  conditions, and observation time from the CR (controller)
 
-High-cardinality metrics (CPU, memory, players, etc.) are expected to come from Prometheus or the Kubernetes metrics API, labeled consistently with `plexus.gg/server-id`.
+The latest observed player count is part of `GameServer.status` for lifecycle
+and customer-action decisions. High-frequency CPU, memory, storage, and player
+telemetry remains in Prometheus or the Kubernetes metrics API, labeled
+consistently with `plexus.gg/server-id`.
 
 ## Safety & Invariants
 

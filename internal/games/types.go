@@ -16,8 +16,7 @@ type GameDefinition struct {
 	// Display is mostly for logs / status
 	DisplayName string
 
-	// DefaultImage is the container image the controller will use unless overridden
-	// in the GameServer spec.
+	// DefaultImage is the container image the controller uses for this game.
 	DefaultImage string
 
 	// MinDiskGiB is the minimum storage this game requires. The controller will
@@ -51,8 +50,8 @@ type GamePort struct {
 }
 
 type ConfigLayer struct {
-	// Templates describe how to turn values from GameServer.spec.gameConfig
-	// into actual files mounted as ConfigMaps.
+	// Templates describe how to turn the selected setup's decoded, versioned
+	// configuration values into actual files mounted as ConfigMaps.
 	Templates []ConfigTemplate
 }
 
@@ -65,7 +64,7 @@ type ConfigTemplate struct {
 	// Format hints how to render (json, properties, ini, etc.)
 	Format string
 
-	// Mappings: key in gameConfig -> key in the rendered file
+	// Mappings: adapter configuration key -> key in the rendered file.
 	Mappings map[string]string
 }
 

@@ -18,7 +18,8 @@ For the overall product direction and why we chose the CRD + separate controller
 - Manage ConfigMaps for the config layer.
 - Provision and tear down short-lived editor pods for raw disk file management.
 - Handle safe archive ingest/export (object storage ↔ PVC) only while the server is stopped.
-- Maintain rich status (phase, endpoint, conditions, editor session state).
+- Maintain rich runtime status (phase, active setup, observed generations,
+  endpoint, players, conditions, and observation time).
 
 ## Implementation Phases
 
@@ -74,7 +75,8 @@ Exit criteria:
 - Backend can request a managed operation/session (via CR status/subresource or
   narrow API); customers do not receive a general filesystem browser.
 - Controller cleans up editor pods on session end or timeout.
-- Status reflects `EditorActive` / `EditorSessionID` etc.
+- Editor-session state is reported through a dedicated condition or future
+  supporting resource without replacing the observed runtime phase.
 
 Exit criteria:
 - A stopped server can have an editor pod spun up on demand.

@@ -3,9 +3,9 @@
 // +groupName=plexus.gg
 package v1alpha1
 
-//go:generate go run sigs.k8s.io/controller-tools/cmd/controller-gen@latest object:headerFile=../../hack/boilerplate.go.txt paths=./...
+//go:generate go run sigs.k8s.io/controller-tools/cmd/controller-gen object:headerFile=../../hack/boilerplate.go.txt paths=./...
 
-//go:generate go run sigs.k8s.io/controller-tools/cmd/controller-gen@latest crd:crdVersions=v1 paths=./... output:crd:artifacts:config=../../kustomization/base/crds
+//go:generate go run sigs.k8s.io/controller-tools/cmd/controller-gen crd:crdVersions=v1 paths=./... output:crd:artifacts:config=../../kustomization/base/crds
 
 import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
