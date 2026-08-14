@@ -583,6 +583,13 @@ func TestFactorioStoppedEditIsAcknowledgedAndNextStartRendersExactEnvelope(t *te
 	gameServer.Generation = 2
 	replacementSecret := testSetupSecret(t, gameServer)
 	replacementSecret.Annotations[factorio.SecretRevisionAnnotation] = "2"
+	replacementSecretValues := factorio.Secrets{
+		Username:     testSecretValue("replacement-account"),
+		Token:        testSecretValue("replacement-token"),
+		GamePassword: testSecretValue("replacement-join"),
+		RCONPassword: testSecretValue("replacement-rcon"),
+	}
+	replacementSecret.Data[factorio.SecretDataKey] = marshalTestJSON(t, replacementSecretValues)
 	if err := kubeClient.Create(ctx, replacementSecret); err != nil {
 		t.Fatal(err)
 	}
@@ -599,6 +606,9 @@ func TestFactorioStoppedEditIsAcknowledgedAndNextStartRendersExactEnvelope(t *te
 	}
 	if err := kubeClient.Get(ctx, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-config-g2"}, &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("stopped edit rendered runtime input before Start: %v", err)
+	}
+	if err := kubeClient.Get(ctx, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-runtime-g2-r2"}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("stopped edit rendered runtime Secret before Start: %v", err)
 	}
 
 	stopped.Spec.DesiredPower = plexusv1alpha1.DesiredPowerRunning
@@ -617,6 +627,15 @@ func TestFactorioStoppedEditIsAcknowledgedAndNextStartRendersExactEnvelope(t *te
 		"auto_pause":true,"only_admins_can_pause_the_game":true,"autosave_only_on_server":true,
 		"non_blocking_saving":false
 	}`)
+	var runtimeSecret corev1.Secret
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-runtime-g3-r2"}, &runtimeSecret)
+	wantRuntimeSecretData := map[string][]byte{
+		"USERNAME": []byte(replacementSecretValues.Username), "TOKEN": []byte(replacementSecretValues.Token),
+		"GAME_PASSWORD": []byte(replacementSecretValues.GamePassword), "RCON_PASSWORD": []byte(replacementSecretValues.RCONPassword),
+	}
+	if !reflect.DeepEqual(runtimeSecret.Data, wantRuntimeSecretData) {
+		t.Fatalf("runtime Secret data did not use the replacement setup Secret: %#v", runtimeSecret.Data)
+	}
 	var deployment appsv1.Deployment
 	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
 	assertPodTemplateRuntimeInputs(t, &deployment.Spec.Template, "factorio-1-config-g3", "factorio-1-runtime-g3-r2")
