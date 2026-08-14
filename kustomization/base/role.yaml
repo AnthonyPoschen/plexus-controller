@@ -34,7 +34,15 @@ rules:
   - pods
   verbs:
   - delete
+  - get
   - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  verbs:
+  - get
 - apiGroups:
   - apps
   resources:
@@ -48,9 +56,20 @@ rules:
   - update
   - watch
 - apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
   - plexus.gg
   resources:
   - gameservers
+  - saveexports
   verbs:
   - get
   - list
@@ -61,12 +80,14 @@ rules:
   - plexus.gg
   resources:
   - gameservers/finalizers
+  - saveexports/finalizers
   verbs:
   - update
 - apiGroups:
   - plexus.gg
   resources:
   - gameservers/status
+  - saveexports/status
   verbs:
   - get
   - patch

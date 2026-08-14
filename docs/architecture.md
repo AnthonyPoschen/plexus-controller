@@ -50,6 +50,26 @@ an unloaded Server is valid only with `spec.desiredPower: Stopped`.
 - User uploads/downloads directly to R2/S3.
 - A separate "ingest" or "export" action (only while server is stopped) tells the controller to copy the archive safely between object storage and the PVC (using the editor pod context or a dedicated job).
 
+The Factorio export tracer uses the dedicated-job form. A backend-authored
+`SaveExport` carries owner/server/setup/game identity, an immutable Secret
+reference for one expiring object-storage PUT, and an expiry—never a filesystem
+path. Reconciliation requires the matching GameServer generation to be freshly
+observed Stopped. The Job mounts only the adapter's `saves` PVC subpath
+read-only. For Factorio's real `/factorio/saves/*.zip` layout, the adapter
+selects the uniquely latest modified archive, validates it directly, and
+uploads it without creating a nested ZIP. The authorization Secret is deleted
+on success or failure. A bounded, redacted stage diagnostic and actual archive
+size are recorded in terminal status before backend cleanup can delete the
+managed operation; otherwise the Job remains only until expiry.
+
+While the Job runs, the exporter emits at most nine coarse JSON milestones for
+archive selection, validation, and upload. The controller samples only the
+last 16 Pod-log lines (capped at 8 KiB), accepts allowlisted stages and
+monotonically advancing percentages, and updates `SaveExport.status` only when
+a milestone advances. These milestones describe completed exporter work, not
+byte-precise object-storage durability, and never contain transfer URLs or
+free-form diagnostics.
+
 ## GameServer Custom Resource
 
 The controller reconciles `GameServer` resources in the `plexus.gg/v1alpha1` API group.

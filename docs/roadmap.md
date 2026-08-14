@@ -107,6 +107,11 @@ Exit criteria:
 
 ### Phase 4: Archive Ingest / Export
 
+Factorio export is delivered as the first tracer: `SaveExport` drives a
+short-lived, adapter-path-scoped Job and expiring object-storage upload while
+both backend and controller enforce fresh stopped/setup identity. Import and
+other game adapters remain in this phase.
+
 - Object storage handoff support (backend provides pre-signed URLs).
 - Controller-driven jobs or steps inside the editor pod context that safely copy archives between object storage and the PVC.
 - Gating behind "server must be stopped" state.
