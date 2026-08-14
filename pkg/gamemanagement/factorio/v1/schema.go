@@ -60,11 +60,11 @@ func Schema() model.ManagementSchema {
 			{ID: "mods", Released: false, Description: "Provider-backed Factorio mod management."},
 			{ID: "saves", Released: false, Description: "Validated save import and export."},
 			{ID: "console", Released: false, Description: "Interactive Factorio administration over RCON."},
-			{ID: "logs", Released: false, Description: "Read-only container and Factorio log output."},
+			{ID: "logs", Released: true, Description: "Read-only live container and Factorio log output."},
 		},
 		Runtime: model.RuntimePolicy{Channels: []model.RuntimeChannel{
 			{ID: "rcon", Label: "Game console", Interaction: model.InteractionInteractive, Protocol: "rcon", Released: false},
-			{ID: "container-stdout", Label: "Server output", Interaction: model.InteractionReadOnly, Protocol: "container-stdout", Released: false},
+			{ID: "container-stdout", Label: "Server output", Interaction: model.InteractionReadOnly, Protocol: "container-stdout", Released: true},
 			{ID: "factorio-log", Label: "Factorio log", Interaction: model.InteractionReadOnly, Protocol: "file", Released: false},
 		}},
 		Shutdown: model.ShutdownPolicy{Strategy: "rcon-command", Command: "/quit", TimeoutSeconds: 90, ForceSupported: true},

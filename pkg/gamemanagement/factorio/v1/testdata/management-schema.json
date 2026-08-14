@@ -271,8 +271,8 @@
     },
     {
       "id": "logs",
-      "released": false,
-      "description": "Read-only container and Factorio log output."
+      "released": true,
+      "description": "Read-only live container and Factorio log output."
     }
   ],
   "runtime": {
@@ -289,7 +289,7 @@
         "label": "Server output",
         "interaction": "read-only",
         "protocol": "container-stdout",
-        "released": false
+        "released": true
       },
       {
         "id": "factorio-log",

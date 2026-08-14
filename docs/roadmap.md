@@ -47,6 +47,15 @@ rendering is integrated. Graceful stop and restart use the adapter shutdown
 policy, explicit Force stop bypasses pod grace, and replacement readiness is
 fenced to the new Deployment revision.
 
+The first live runtime-output slice is also released for Factorio: the shared
+game-management profile declares one read-only current-container stdout
+channel, and controller-owned server, owner, game, active-setup, and primary
+component labels let the backend bind that stream to the current workload and
+verify its Pod → ReplicaSet → Deployment ownership chain. The backend exposes
+only a bounded current-run tail plus live follow; retained history, stdin, pod
+identity, arbitrary container selection, and general Kubernetes log access are
+not part of this release.
+
 - Implement a `GameServerReconciler` that can create a Deployment + Service + PVC for one game (start with Factorio or Project Zomboid).
 - Use a simple embedded or ConfigMap-sourced `GameRuntimeProfile`.
 - Basic status updates (phase, observedGeneration).

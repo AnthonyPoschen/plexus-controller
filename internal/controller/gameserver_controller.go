@@ -38,8 +38,6 @@ const (
 	conditionReady             = "Ready"
 	conditionStorage           = "StorageReady"
 	conditionEndpoint          = "EndpointReady"
-	componentLabel             = "app.kubernetes.io/component"
-	componentValue             = "game-server"
 	dataVolumeName             = "game-data"
 	dataMountPath              = "/factorio"
 	configVolumeName           = "factorio-config"
@@ -844,8 +842,8 @@ func forceDeletePodLabels(gameServer *plexusv1alpha1.GameServer) map[string]stri
 
 func selectorLabels(gameServer *plexusv1alpha1.GameServer) map[string]string {
 	return map[string]string{
-		plexusv1alpha1.LabelServerID: gameServer.Spec.ServerID,
-		componentLabel:               componentValue,
+		plexusv1alpha1.LabelServerID:  gameServer.Spec.ServerID,
+		plexusv1alpha1.LabelComponent: plexusv1alpha1.ComponentGameServer,
 	}
 }
 

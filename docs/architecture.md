@@ -170,6 +170,22 @@ This allows commands like:
 
 See the `GameServer` spec for the `ownerUserID` field.
 
+### Live Runtime Output
+
+Game-management profiles declare customer-visible runtime channels and their
+interaction type. The first released Factorio channel is read-only current
+container stdout. The backend authorizes the customer and follows the primary
+game container through a narrow runtime adapter selected by the stable server,
+owner, game, active-setup, and primary-component labels applied here. The
+backend additionally validates that the Pod is controlled through a ReplicaSet
+by the expected Deployment. Customers never receive pod identities, container
+selectors, Kubernetes credentials, or general log access.
+
+This stream is intentionally not a history store. It uses a bounded current-run
+tail for connection and reconnect; the browser separately bounds and
+deduplicates its in-memory view. Retained output remains a future capability
+that must identify its runtime session explicitly.
+
 ## Editor Pod Lifecycle (High Level)
 
 1. User requests a managed save, backup, mod, or allowlisted advanced-config operation on a stopped server.
