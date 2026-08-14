@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	plexusv1alpha1 "github.com/AnthonyPoschen/plexus-controller/api/v1alpha1"
 	factorio "github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/factorio/v1"
@@ -56,6 +58,14 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	}
 	if got := deployment.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath; got != "/factorio" {
 		t.Fatalf("persistent mount path = %q", got)
+	}
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if container.Lifecycle == nil || container.Lifecycle.PreStop == nil || container.Lifecycle.PreStop.Exec == nil ||
+		!reflect.DeepEqual(container.Lifecycle.PreStop.Exec.Command, []string{"rcon", "/quit"}) {
+		t.Fatalf("Factorio graceful shutdown hook = %#v", container.Lifecycle)
+	}
+	if deployment.Spec.Template.Spec.TerminationGracePeriodSeconds == nil || *deployment.Spec.Template.Spec.TerminationGracePeriodSeconds != 90 {
+		t.Fatalf("Factorio termination grace period = %#v", deployment.Spec.Template.Spec.TerminationGracePeriodSeconds)
 	}
 	if deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
 		t.Fatalf("Factorio rollout strategy = %q, want Recreate to prevent overlapping PVC writers", deployment.Spec.Strategy.Type)
@@ -189,6 +199,188 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-runtime-g1-r1"}, &corev1.Secret{})
 }
 
+func TestFactorioStopUsesCurrentShutdownMode(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		runningMode   plexusv1alpha1.ShutdownMode
+		requestedMode plexusv1alpha1.ShutdownMode
+		wantForce     bool
+	}{
+		{name: "running Force to requested Graceful", runningMode: plexusv1alpha1.ShutdownModeForce, requestedMode: plexusv1alpha1.ShutdownModeGraceful},
+		{name: "running Graceful to requested Force", runningMode: plexusv1alpha1.ShutdownModeGraceful, requestedMode: plexusv1alpha1.ShutdownModeForce, wantForce: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+			gameServer.Spec.ShutdownMode = test.runningMode
+			var podDeleteGracePeriods []*int64
+			deploymentMutations := 0
+			interceptors := podDeleteInterceptor(&podDeleteGracePeriods)
+			interceptors.Create = func(ctx context.Context, kubeClient client.WithWatch, object client.Object, options ...client.CreateOption) error {
+				if _, ok := object.(*appsv1.Deployment); ok {
+					deploymentMutations++
+				}
+				return kubeClient.Create(ctx, object, options...)
+			}
+			interceptors.Update = func(ctx context.Context, kubeClient client.WithWatch, object client.Object, options ...client.UpdateOption) error {
+				if _, ok := object.(*appsv1.Deployment); ok {
+					deploymentMutations++
+				}
+				return kubeClient.Update(ctx, object, options...)
+			}
+			reconciler, kubeClient := testReconcilerWithInterceptors(t, interceptors, gameServer)
+			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+			reconcileTwice(t, ctx, reconciler, request)
+
+			var deployment appsv1.Deployment
+			get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+			container := deployment.Spec.Template.Spec.Containers[0]
+			if container.Lifecycle == nil || container.Lifecycle.PreStop == nil || container.Lifecycle.PreStop.Exec == nil ||
+				!reflect.DeepEqual(container.Lifecycle.PreStop.Exec.Command, []string{"rcon", "/quit"}) {
+				t.Fatalf("running %s pod graceful shutdown hook = %#v", test.runningMode, container.Lifecycle)
+			}
+			if grace := deployment.Spec.Template.Spec.TerminationGracePeriodSeconds; grace == nil || *grace != 90 {
+				t.Fatalf("running %s pod termination grace period = %#v", test.runningMode, grace)
+			}
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "factorio-1-pod", Namespace: gameServer.Namespace, Labels: maps.Clone(deployment.Spec.Template.Labels)}}
+			if err := kubeClient.Create(ctx, pod); err != nil {
+				t.Fatal(err)
+			}
+			deploymentMutations = 0
+
+			current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+			current.Spec.DesiredPower = plexusv1alpha1.DesiredPowerStopped
+			current.Spec.ShutdownMode = test.requestedMode
+			current.Generation++
+			if err := kubeClient.Update(ctx, current); err != nil {
+				t.Fatal(err)
+			}
+			reconcileOnce(t, ctx, reconciler, request)
+
+			if deploymentMutations != 0 {
+				t.Fatalf("Stop mutated or recreated the Deployment %d times", deploymentMutations)
+			}
+			podLookupErr := kubeClient.Get(ctx, client.ObjectKeyFromObject(pod), &corev1.Pod{})
+			if test.wantForce {
+				if !apierrors.IsNotFound(podLookupErr) {
+					t.Fatalf("Force stop Pod lookup error = %v, want NotFound", podLookupErr)
+				}
+				if len(podDeleteGracePeriods) != 1 || podDeleteGracePeriods[0] == nil || *podDeleteGracePeriods[0] != 0 {
+					t.Fatalf("Force stop Pod grace periods = %#v, want [0]", podDeleteGracePeriods)
+				}
+			} else {
+				if podLookupErr != nil {
+					t.Fatalf("Graceful stop explicitly removed Pod in fake client: %v", podLookupErr)
+				}
+				if len(podDeleteGracePeriods) != 0 {
+					t.Fatalf("Graceful stop Pod grace periods = %#v, want normal Deployment cascade", podDeleteGracePeriods)
+				}
+			}
+		})
+	}
+}
+
+func TestFactorioForceEscalatesAnInProgressGracefulStop(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	var podDeleteGracePeriods []*int64
+	reconciler, kubeClient := testReconcilerWithInterceptors(t, podDeleteInterceptor(&podDeleteGracePeriods), gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	deployment.Finalizers = []string{"test.plexus.gg/hold-deletion"}
+	if err := kubeClient.Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "factorio-1-pod", Namespace: gameServer.Namespace, Labels: maps.Clone(deployment.Spec.Template.Labels)}}
+	if err := kubeClient.Create(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	current.Spec.DesiredPower = plexusv1alpha1.DesiredPowerStopped
+	current.Generation++
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	if deployment.DeletionTimestamp.IsZero() {
+		t.Fatal("Graceful stop did not begin Deployment deletion")
+	}
+	if len(podDeleteGracePeriods) != 0 {
+		t.Fatalf("Graceful stop Pod grace periods = %#v, want normal 90-second termination", podDeleteGracePeriods)
+	}
+
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	current.Spec.ShutdownMode = plexusv1alpha1.ShutdownModeForce
+	current.Generation++
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(pod), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("Force escalation Pod lookup error = %v, want NotFound", err)
+	}
+	if len(podDeleteGracePeriods) != 1 || podDeleteGracePeriods[0] == nil || *podDeleteGracePeriods[0] != 0 {
+		t.Fatalf("Force escalation Pod grace periods = %#v, want [0]", podDeleteGracePeriods)
+	}
+}
+
+func TestForceDeletePodsRequiresGameServerUIDLabel(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerStopped)
+	gameServer.Spec.ShutdownMode = plexusv1alpha1.ShutdownModeForce
+	ownedPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "owned-pod", Namespace: gameServer.Namespace, Labels: childLabels(gameServer),
+	}}
+	collidingPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "colliding-pod", Namespace: gameServer.Namespace, Labels: selectorLabels(gameServer),
+	}}
+	foreignUIDLabels := forceDeletePodLabels(gameServer)
+	foreignUIDLabels[plexusv1alpha1.LabelGameServerUID] = "foreign-gameserver-uid"
+	foreignUIDPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: "foreign-uid-pod", Namespace: gameServer.Namespace, Labels: foreignUIDLabels,
+	}}
+	var podDeleteGracePeriods []*int64
+	reconciler, kubeClient := testReconcilerWithInterceptors(
+		t, podDeleteInterceptor(&podDeleteGracePeriods), gameServer, ownedPod, collidingPod, foreignUIDPod,
+	)
+
+	remaining, err := reconciler.forceDeletePods(ctx, gameServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !remaining {
+		t.Fatal("forceDeletePods reported no UID-bound pods")
+	}
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(ownedPod), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("owned Pod lookup error = %v, want NotFound", err)
+	}
+	get(t, ctx, kubeClient, client.ObjectKeyFromObject(collidingPod), &corev1.Pod{})
+	get(t, ctx, kubeClient, client.ObjectKeyFromObject(foreignUIDPod), &corev1.Pod{})
+	if len(podDeleteGracePeriods) != 1 || podDeleteGracePeriods[0] == nil || *podDeleteGracePeriods[0] != 0 {
+		t.Fatalf("Pod grace periods = %#v, want [0] for only the UID-bound Pod", podDeleteGracePeriods)
+	}
+}
+
+func podDeleteInterceptor(gracePeriods *[]*int64) interceptor.Funcs {
+	return interceptor.Funcs{
+		Delete: func(ctx context.Context, kubeClient client.WithWatch, object client.Object, options ...client.DeleteOption) error {
+			if _, ok := object.(*corev1.Pod); ok {
+				deleteOptions := &client.DeleteOptions{}
+				for _, option := range options {
+					option.ApplyToDelete(deleteOptions)
+				}
+				*gracePeriods = append(*gracePeriods, deleteOptions.GracePeriodSeconds)
+			}
+			return kubeClient.Delete(ctx, object, options...)
+		},
+	}
+}
+
 func TestFactorioUnloadedServerRetainsRevisionInputsUntilDeletion(t *testing.T) {
 	ctx := context.Background()
 	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
@@ -247,6 +439,78 @@ func TestFactorioReconcileReportsFailedForInvalidSchema(t *testing.T) {
 	}
 	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("invalid setup Deployment lookup error = %v, want NotFound", err)
+	}
+}
+
+func TestFactorioRestartWaitsForTheReplacementDeploymentRevision(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	reconciler, kubeClient := testReconciler(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	var service corev1.Service
+	get(t, ctx, kubeClient, request.NamespacedName, &service)
+	service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{Hostname: "factorio.example.test"}}
+	if err := kubeClient.Status().Update(ctx, &service); err != nil {
+		t.Fatal(err)
+	}
+	deployment.Generation = 1
+	if err := kubeClient.Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	deployment.Status.ObservedGeneration = 1
+	deployment.Status.Replicas = 1
+	deployment.Status.UpdatedReplicas = 1
+	deployment.Status.AvailableReplicas = 1
+	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	current.Spec.RestartGeneration = 1
+	current.Generation = 2
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	deployment.Generation = 2
+	deployment.Status.ObservedGeneration = 1
+	deployment.Status.Replicas = 2
+	deployment.Status.UpdatedReplicas = 1
+	deployment.Status.AvailableReplicas = 1
+	if err := kubeClient.Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	if deployment.Spec.Template.Annotations["plexus.gg/restart-generation"] != "1" {
+		t.Fatalf("replacement pod template restart generation = %#v", deployment.Spec.Template.Annotations)
+	}
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStarting || current.Status.ObservedRestartGeneration != 0 {
+		t.Fatalf("old available pod acknowledged Restart: %#v", current.Status)
+	}
+
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas = 1
+	deployment.Status.UpdatedReplicas = 1
+	deployment.Status.AvailableReplicas = 1
+	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseRunning || current.Status.ObservedRestartGeneration != 1 {
+		t.Fatalf("replacement deployment was not acknowledged: %#v", current.Status)
 	}
 }
 
@@ -558,6 +822,89 @@ func TestRevisionScopedRuntimeNamesAreDeterministicDNSLabels(t *testing.T) {
 	}
 }
 
+func TestFactorioStoppedEditIsAcknowledgedAndNextStartRendersExactEnvelope(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerStopped)
+	gameServer.Generation = 1
+	gameServer.Spec.SelectedSetup.Configuration.Values.Raw = []byte(`{
+		"name":"Old Factory","description":"Must be cleared","tags":["old"],"maxPlayers":16
+	}`)
+	gameServer.Spec.SelectedSetup.Configuration.SecretRef.Name = "setup-1-secrets-r1"
+	oldSecret := testSetupSecret(t, gameServer)
+	reconciler, kubeClient := testReconcilerWithoutSecret(t, gameServer, oldSecret)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+
+	reconcileTwice(t, ctx, reconciler, request)
+	stopped := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if stopped.Status.Phase != plexusv1alpha1.GameServerPhaseStopped || stopped.Status.ObservedGeneration != 1 {
+		t.Fatalf("initial stopped configuration was not acknowledged: %#v", stopped.Status)
+	}
+
+	gameServer.Spec.SelectedSetup.Configuration.Values.Raw = []byte(`{
+		"name":"Acceptance Factory","maxPlayers":32,"autosave":{"intervalMinutes":7,"slots":6}
+	}`)
+	gameServer.Spec.SelectedSetup.Configuration.SecretRef.Name = "setup-1-secrets-r2"
+	gameServer.Generation = 2
+	replacementSecret := testSetupSecret(t, gameServer)
+	replacementSecret.Annotations[factorio.SecretRevisionAnnotation] = "2"
+	replacementSecretValues := factorio.Secrets{
+		Username:     testSecretValue("replacement-account"),
+		Token:        testSecretValue("replacement-token"),
+		GamePassword: testSecretValue("replacement-join"),
+		RCONPassword: testSecretValue("replacement-rcon"),
+	}
+	replacementSecret.Data[factorio.SecretDataKey] = marshalTestJSON(t, replacementSecretValues)
+	if err := kubeClient.Create(ctx, replacementSecret); err != nil {
+		t.Fatal(err)
+	}
+	stopped.Spec.SelectedSetup.Configuration = gameServer.Spec.SelectedSetup.Configuration
+	stopped.Generation = 2
+	if err := kubeClient.Update(ctx, stopped); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcileTwice(t, ctx, reconciler, request)
+	stopped = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if stopped.Status.Phase != plexusv1alpha1.GameServerPhaseStopped || stopped.Status.ObservedGeneration != 2 {
+		t.Fatalf("stopped edit was not acknowledged: %#v", stopped.Status)
+	}
+	if err := kubeClient.Get(ctx, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-config-g2"}, &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("stopped edit rendered runtime input before Start: %v", err)
+	}
+	if err := kubeClient.Get(ctx, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-runtime-g2-r2"}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("stopped edit rendered runtime Secret before Start: %v", err)
+	}
+
+	stopped.Spec.DesiredPower = plexusv1alpha1.DesiredPowerRunning
+	stopped.Generation = 3
+	if err := kubeClient.Update(ctx, stopped); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+
+	var configMap corev1.ConfigMap
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-config-g3"}, &configMap)
+	assertJSONEqual(t, configMap.Data[configFileName], `{
+		"name":"Acceptance Factory","max_players":32,"autosave_interval":7,"autosave_slots":6,
+		"description":"","tags":[],"visibility":{"public":true,"lan":true},
+		"require_user_verification":true,"allow_commands":"admins-only","afk_autokick_interval":0,
+		"auto_pause":true,"only_admins_can_pause_the_game":true,"autosave_only_on_server":true,
+		"non_blocking_saving":false
+	}`)
+	var runtimeSecret corev1.Secret
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-runtime-g3-r2"}, &runtimeSecret)
+	wantRuntimeSecretData := map[string][]byte{
+		"USERNAME": []byte(replacementSecretValues.Username), "TOKEN": []byte(replacementSecretValues.Token),
+		"GAME_PASSWORD": []byte(replacementSecretValues.GamePassword), "RCON_PASSWORD": []byte(replacementSecretValues.RCONPassword),
+	}
+	if !reflect.DeepEqual(runtimeSecret.Data, wantRuntimeSecretData) {
+		t.Fatalf("runtime Secret data did not use the replacement setup Secret: %#v", runtimeSecret.Data)
+	}
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	assertPodTemplateRuntimeInputs(t, &deployment.Spec.Template, "factorio-1-config-g3", "factorio-1-runtime-g3-r2")
+}
+
 func TestFactorioReconcileRendersCustomConfigurationAndSecretBackedEnvironment(t *testing.T) {
 	ctx := context.Background()
 	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
@@ -820,15 +1167,23 @@ func testGameServer(power plexusv1alpha1.DesiredPower) *plexusv1alpha1.GameServe
 }
 
 func testReconciler(t *testing.T, objects ...client.Object) (*GameServerReconciler, client.Client) {
+	return testReconcilerWithInterceptors(t, interceptor.Funcs{}, objects...)
+}
+
+func testReconcilerWithInterceptors(t *testing.T, interceptors interceptor.Funcs, objects ...client.Object) (*GameServerReconciler, client.Client) {
 	for _, object := range append([]client.Object(nil), objects...) {
 		if gameServer, ok := object.(*plexusv1alpha1.GameServer); ok && gameServer.Spec.SelectedSetup != nil {
 			objects = append(objects, testSetupSecret(t, gameServer))
 		}
 	}
-	return testReconcilerWithoutSecret(t, objects...)
+	return testReconcilerWithoutSecretWithInterceptors(t, interceptors, objects...)
 }
 
 func testReconcilerWithoutSecret(t *testing.T, objects ...client.Object) (*GameServerReconciler, client.Client) {
+	return testReconcilerWithoutSecretWithInterceptors(t, interceptor.Funcs{}, objects...)
+}
+
+func testReconcilerWithoutSecretWithInterceptors(t *testing.T, interceptors interceptor.Funcs, objects ...client.Object) (*GameServerReconciler, client.Client) {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -839,7 +1194,7 @@ func testReconcilerWithoutSecret(t *testing.T, objects ...client.Object) (*GameS
 	}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&plexusv1alpha1.GameServer{}, &appsv1.Deployment{}, &corev1.Service{}).
-		WithObjects(objects...).Build()
+		WithObjects(objects...).WithInterceptorFuncs(interceptors).Build()
 	return &GameServerReconciler{Client: kubeClient, Scheme: scheme}, kubeClient
 }
 

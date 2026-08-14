@@ -42,7 +42,10 @@ Exit criteria:
 The first Factorio tracer now reconciles a Deployment, LoadBalancer Service,
 and persistent volume; reports Starting, Running, Stopping, Stopped, and Failed
 observations with periodic freshness updates; and removes the workload and
-public endpoint while retaining storage on stop.
+public endpoint while retaining storage on stop. Factorio configuration
+rendering is integrated. Graceful stop and restart use the adapter shutdown
+policy, explicit Force stop bypasses pod grace, and replacement readiness is
+fenced to the new Deployment revision.
 
 - Implement a `GameServerReconciler` that can create a Deployment + Service + PVC for one game (start with Factorio or Project Zomboid).
 - Use a simple embedded or ConfigMap-sourced `GameRuntimeProfile`.
