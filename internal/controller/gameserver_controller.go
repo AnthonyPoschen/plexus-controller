@@ -61,6 +61,7 @@ type GameServerReconciler struct {
 // +kubebuilder:rbac:groups=plexus.gg,resources=gameservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=plexus.gg,resources=gameservers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=list;delete
 // +kubebuilder:rbac:groups="",resources=services;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;delete
@@ -466,7 +467,7 @@ func (r *GameServerReconciler) ensureService(ctx context.Context, gameServer *pl
 }
 
 func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition, secretRevision int64) (*appsv1.Deployment, error) {
-	lifecycle, terminationGracePeriod, err := gracefulShutdownLifecycle(gameServer, definition)
+	lifecycle, terminationGracePeriod, err := gracefulShutdownLifecycle(definition)
 	if err != nil {
 		return nil, err
 	}
@@ -529,10 +530,7 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 	return deployment, err
 }
 
-func gracefulShutdownLifecycle(gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition) (*corev1.Lifecycle, *int64, error) {
-	if gameServer.Spec.ShutdownMode != plexusv1alpha1.ShutdownModeGraceful {
-		return nil, nil, nil
-	}
+func gracefulShutdownLifecycle(definition games.GameDefinition) (*corev1.Lifecycle, *int64, error) {
 	policy := definition.Shutdown
 	if policy.Strategy != "rcon-command" || policy.Command == "" || policy.TimeoutSeconds < 1 {
 		return nil, nil, fmt.Errorf("game %q has no supported graceful shutdown policy", definition.ID)
@@ -684,15 +682,42 @@ func (r *GameServerReconciler) deleteOwnedObject(ctx context.Context, gameServer
 func (r *GameServerReconciler) deleteDeployment(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (bool, error) {
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: gameServer.Name, Namespace: gameServer.Namespace}}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(deployment), deployment); err != nil {
-		return false, client.IgnoreNotFound(err)
+		if client.IgnoreNotFound(err) != nil {
+			return false, err
+		}
+		return r.forceDeletePods(ctx, gameServer)
 	}
 	if err := ensureControlledBy(gameServer, deployment); err != nil {
 		return false, err
 	}
-	if !deployment.DeletionTimestamp.IsZero() {
-		return true, nil
+	if deployment.DeletionTimestamp.IsZero() {
+		if err := r.Delete(ctx, deployment); err != nil {
+			return true, err
+		}
 	}
-	return true, r.Delete(ctx, deployment)
+	if _, err := r.forceDeletePods(ctx, gameServer); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func (r *GameServerReconciler) forceDeletePods(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (bool, error) {
+	if gameServer.Spec.ShutdownMode != plexusv1alpha1.ShutdownModeForce {
+		return false, nil
+	}
+	if gameServer.UID == "" {
+		return false, fmt.Errorf("GameServer %s/%s has no UID; refusing to force-delete pods", gameServer.Namespace, gameServer.Name)
+	}
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(gameServer.Namespace), client.MatchingLabels(forceDeletePodLabels(gameServer))); err != nil {
+		return false, err
+	}
+	for index := range pods.Items {
+		if err := r.Delete(ctx, &pods.Items[index], client.GracePeriodSeconds(0)); client.IgnoreNotFound(err) != nil {
+			return true, err
+		}
+	}
+	return len(pods.Items) > 0, nil
 }
 
 func (r *GameServerReconciler) deleteService(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (bool, error) {
@@ -804,9 +829,16 @@ func ensureControlledBy(owner *plexusv1alpha1.GameServer, object metav1.Object) 
 
 func childLabels(gameServer *plexusv1alpha1.GameServer) map[string]string {
 	labels := selectorLabels(gameServer)
+	labels[plexusv1alpha1.LabelGameServerUID] = string(gameServer.UID)
 	labels[plexusv1alpha1.LabelOwnerUserID] = gameServer.Spec.OwnerUserID
 	labels[plexusv1alpha1.LabelGameID] = gameServer.Spec.SelectedSetup.GameID
 	labels[plexusv1alpha1.LabelSetupID] = gameServer.Spec.SelectedSetup.ID
+	return labels
+}
+
+func forceDeletePodLabels(gameServer *plexusv1alpha1.GameServer) map[string]string {
+	labels := selectorLabels(gameServer)
+	labels[plexusv1alpha1.LabelGameServerUID] = string(gameServer.UID)
 	return labels
 }
 
