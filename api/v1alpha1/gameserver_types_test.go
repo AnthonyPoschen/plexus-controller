@@ -110,7 +110,7 @@ func TestGeneratedCRDMatchesGameServerContract(t *testing.T) {
 	}
 
 	status := root.Properties["status"]
-	wantStatusFields := []string{"activeSetupID", "conditions", "endpoint", "lastObservedAt", "message", "observedGeneration", "observedRestartGeneration", "phase", "players"}
+	wantStatusFields := []string{"activeSetupID", "conditions", "endpoint", "lastObservedAt", "message", "observedConfigurationGeneration", "observedGeneration", "observedRestartGeneration", "observedSecretRevision", "phase", "players"}
 	if got := sortedPropertyNames(status.Properties); !reflect.DeepEqual(got, wantStatusFields) {
 		t.Fatalf("status fields = %v, want %v", got, wantStatusFields)
 	}

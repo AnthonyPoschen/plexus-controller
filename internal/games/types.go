@@ -94,7 +94,7 @@ var Registry = map[string]GameDefinition{
 		ConfigLayer: ConfigLayer{
 			Templates: []ConfigTemplate{
 				{
-					TargetPath: "/config/server-settings.json",
+					TargetPath: "/factorio/config/server-settings.json",
 					Format:     "json",
 					Mappings: map[string]string{
 						"server-name":       "name",

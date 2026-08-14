@@ -42,9 +42,9 @@ Exit criteria:
 The first Factorio tracer now reconciles a Deployment, LoadBalancer Service,
 and persistent volume; reports Starting, Running, Stopping, Stopped, and Failed
 observations with periodic freshness updates; and removes the workload and
-public endpoint while retaining storage on stop. Factorio graceful stop and
-restart now use its adapter shutdown policy, with replacement readiness fenced
-to the new Deployment revision. Configuration rendering remains Phase 2 work.
+public endpoint while retaining storage on stop. Factorio configuration
+rendering is integrated. Graceful stop and restart use the adapter shutdown
+policy, with replacement readiness fenced to the new Deployment revision.
 
 - Implement a `GameServerReconciler` that can create a Deployment + Service + PVC for one game (start with Factorio or Project Zomboid).
 - Use a simple embedded or ConfigMap-sourced `GameRuntimeProfile`.
@@ -57,15 +57,20 @@ Exit criteria:
 
 ### Phase 2: Config Layer (ConfigMaps)
 
-Foundation delivered: the controller-owned `factorio/v1` game-management
-contract now provides the typed configuration/secret boundary and serialized
-schema consumed by both repositories. Reconciliation and customer mutation
-work remain in this phase and must use that contract rather than introduce a
+The controller-owned `factorio/v1` game-management contract provides the typed
+configuration/secret boundary and serialized schema consumed by both
+repositories. Factorio reconciliation now validates that contract, renders its
+settings ConfigMap and Secret-backed environment on Start, rejects incompatible
+schema revisions with migration-required status, and acknowledges the active
+configuration generation and Secret revision only after rollout availability.
+Derived ConfigMaps and runtime Secrets are immutable and revision-scoped so an
+old pod template cannot restart against replacement inputs. Customer mutation
+work remains in this phase and must use that contract rather than introduce a
 second Factorio schema.
 
 - Define the first `GameRuntimeProfile` entries with explicit config file mappings.
-- Controller renders ConfigMaps (and mounts them into the game pod).
-- Support backend-driven versioned structured configuration and referenced
+- [x] Controller renders ConfigMaps (and mounts them into the game pod).
+- [x] Support backend-driven versioned structured configuration and referenced
   setup-scoped Secrets from the shared game-adapter contract.
 - Document and enforce the "confirm stopped → save configuration → next Start
   applies it" flow.

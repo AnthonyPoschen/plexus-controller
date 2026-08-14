@@ -70,6 +70,26 @@ a versioned envelope, with sensitive values held in a referenced setup-scoped
 Secret. Backend and controller consume the same controller-owned versioned game
 management/secret schema library.
 
+For Factorio, structured non-sensitive values become
+`server-settings.json` in an owned ConfigMap. Decoded sensitive fields are
+copied only into an owned Kubernetes Secret and reach the container through
+`SecretKeyRef` environment entries; plaintext is never written to the
+ConfigMap, pod template, labels, annotations, or status. An init container
+copies the ConfigMap file into a per-pod writable config volume so the Factorio
+image can combine it with Secret-backed environment values without mutating the
+source ConfigMap. Both derived runtime resources are immutable and have
+deterministic DNS-label names scoped to the GameServer generation and setup
+Secret revision. The matching pod template references those exact names, so a
+new accepted revision creates a new pod without changing the inputs visible to
+an old pod or to an old pod template that is restarted during rollout.
+
+Older revision-scoped ConfigMaps and runtime Secrets remain controller-owned
+while the GameServer exists. Stopping or unloading removes the Deployment and
+public Service but retains those inputs because Deployment deletion can race
+with terminating pods. The finalizer lists and deletes every owned revision
+before GameServer deletion; future pruning may remove revisions earlier only
+when no live or terminating pod can still reference them.
+
 Before acknowledging a selected setup generation, the controller requires the
 same-namespace Secret to be immutable, labeled for that server, owner, game, and
 setup, annotated with the pinned schema and a positive revision, and to contain
@@ -108,6 +128,8 @@ status:
   activeSetupID: "setup uuid"
   observedGeneration: 12
   observedRestartGeneration: 4
+  observedConfigurationGeneration: 12
+  observedSecretRevision: 2
   endpoint: "example.plexus.gg"
   players: 6
   lastObservedAt: "2026-08-13T12:00:00Z"
@@ -119,8 +141,9 @@ status:
 `Force`. Observed `phase` is one of `Unknown`, `Provisioning`, `Stopped`,
 `Starting`, `Running`, `Stopping`, or `Failed`. Restart intent is an incremented
 generation rather than a transient command. Status separately reports which
-resource and restart generations were observed, so accepting desired state
-never claims convergence.
+resource and restart generations were observed. Once a workload is available,
+it also reports the active configuration generation and Secret revision, so
+accepting desired state never claims that a new revision is already active.
 
 ### Customer / Owner Lookup
 
