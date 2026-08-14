@@ -243,6 +243,39 @@ func TestFactorioModArtifactIsInstalledAndReportedOnlyAfterAvailability(t *testi
 	}
 }
 
+func TestFactorioModRemovalClearsArchiveAndObservationOnlyAfterAvailability(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	gameServer.Generation = 2
+	gameServer.Status.InstalledMods = []plexusv1alpha1.InstalledMod{{ProviderID: factorio.ModProviderID, ProviderModID: "tiny-mod", Name: "tiny-mod", Version: "1.2.3"}}
+	gameServer.Status.InstalledModsGeneration = 1
+	reconciler, kubeClient := testReconciler(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	modInit := deployment.Spec.Template.Spec.InitContainers[1]
+	if !strings.Contains(modInit.Args[0], "find /factorio/mods -maxdepth 1 -type f -name '*.zip' -delete") || strings.Contains(modInit.Args[0], "cp /plexus/mod/") || len(modInit.VolumeMounts) != 1 {
+		t.Fatalf("managed mod removal init = %#v", modInit)
+	}
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if len(current.Status.InstalledMods) != 1 || current.Status.InstalledModsGeneration != 1 {
+		t.Fatalf("pending removal discarded installed observation: %#v", current.Status)
+	}
+
+	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas, deployment.Status.UpdatedReplicas, deployment.Status.AvailableReplicas = 1, 1, 1
+	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if len(current.Status.InstalledMods) != 0 || current.Status.InstalledModsGeneration != 2 {
+		t.Fatalf("available mod-free workload observation = %#v", current.Status)
+	}
+}
+
 func TestFactorioWorkloadFailuresPreserveFailureTruth(t *testing.T) {
 	for _, test := range []struct {
 		name, reason string
