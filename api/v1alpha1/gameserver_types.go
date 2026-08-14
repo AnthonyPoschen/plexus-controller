@@ -139,6 +139,16 @@ type GameServerStatus struct {
 	// +kubebuilder:validation:Minimum=0
 	ObservedRestartGeneration int64 `json:"observedRestartGeneration,omitempty"`
 
+	// ObservedConfigurationGeneration is the GameServer generation whose
+	// selected setup configuration is active in the available workload.
+	// +kubebuilder:validation:Minimum=0
+	ObservedConfigurationGeneration int64 `json:"observedConfigurationGeneration,omitempty"`
+
+	// ObservedSecretRevision is the setup Secret revision active in the
+	// available workload. It never contains Secret material.
+	// +kubebuilder:validation:Minimum=0
+	ObservedSecretRevision int64 `json:"observedSecretRevision,omitempty"`
+
 	// Endpoint is the public address players can connect to when available.
 	Endpoint string `json:"endpoint,omitempty"`
 
