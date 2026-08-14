@@ -217,6 +217,9 @@ func (r *SaveExportReconciler) authorize(ctx context.Context, export *plexusv1.S
 	if err := r.Get(ctx, client.ObjectKey{Namespace: export.Namespace, Name: export.Spec.ServerID}, &gameServer); err != nil {
 		return games.GameDefinition{}, fmt.Errorf("owned server runtime was not found")
 	}
+	if !gameServer.DeletionTimestamp.IsZero() {
+		return games.GameDefinition{}, fmt.Errorf("owned server runtime is being deleted")
+	}
 	if gameServer.Spec.ServerID != export.Spec.ServerID || gameServer.Spec.OwnerUserID != export.Spec.OwnerUserID || gameServer.Spec.SelectedSetup == nil ||
 		gameServer.Spec.SelectedSetup.ID != export.Spec.SetupID || gameServer.Spec.SelectedSetup.GameID != export.Spec.GameID {
 		return games.GameDefinition{}, fmt.Errorf("server ownership or selected setup changed")

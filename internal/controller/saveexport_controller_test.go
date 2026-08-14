@@ -59,6 +59,32 @@ func TestSaveExportCreatesPathScopedShortLivedJobOnlyForFreshStoppedSetup(t *tes
 	}
 }
 
+func TestSaveExportRejectsDeletingGameServerBeforeCreatingJob(t *testing.T) {
+	now := time.Date(2026, 8, 15, 1, 15, 0, 0, time.UTC)
+	export, gameServer, secret := authorizedSaveExportFixtures(now)
+	deletedAt := metav1.NewTime(now.Add(-time.Second))
+	gameServer.DeletionTimestamp = &deletedAt
+	gameServer.Finalizers = []string{"plexus.gg/test"}
+	scheme := saveExportTestScheme(t)
+	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&plexusv1.SaveExport{}).WithObjects(export, gameServer, secret).Build()
+	reconciler := SaveExportReconciler{Client: client, Scheme: scheme, ExporterImage: "registry.example/save-exporter:v1", Now: func() time.Time { return now }}
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: export.Namespace, Name: export.Name}}
+
+	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	var observed plexusv1.SaveExport
+	if err := client.Get(context.Background(), request.NamespacedName, &observed); err != nil {
+		t.Fatal(err)
+	}
+	if observed.Status.Phase != plexusv1.SaveExportFailed || observed.Status.Stage != "authorization" || !strings.Contains(observed.Status.Message, "being deleted") {
+		t.Fatalf("deleting server authorization status = %#v", observed.Status)
+	}
+	if err := client.Get(context.Background(), request.NamespacedName, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("deleting server received exporter Job: %v", err)
+	}
+}
+
 func TestExpiredSaveExportCleansManagedResourcesIdempotently(t *testing.T) {
 	now := time.Date(2026, 8, 15, 1, 30, 0, 0, time.UTC)
 	scheme := runtime.NewScheme()
