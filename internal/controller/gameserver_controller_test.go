@@ -57,6 +57,9 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	if got := deployment.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath; got != "/factorio" {
 		t.Fatalf("persistent mount path = %q", got)
 	}
+	if deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+		t.Fatalf("Factorio rollout strategy = %q, want Recreate to prevent overlapping PVC writers", deployment.Spec.Strategy.Type)
+	}
 
 	var configMap corev1.ConfigMap
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-config-g1"}, &configMap)
@@ -113,6 +116,7 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 		t.Fatalf("initial endpoint status = %#v", current.Status)
 	}
 
+	deployment.Status.Replicas = 1
 	deployment.Status.AvailableReplicas = 1
 	deployment.Status.UpdatedReplicas = 1
 	deployment.Status.ObservedGeneration = deployment.Generation
@@ -349,6 +353,7 @@ func TestFactorioRunningStatusAcknowledgesActiveConfigurationAndSecretRevision(t
 
 	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
 	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas = 1
 	deployment.Status.UpdatedReplicas = 1
 	deployment.Status.AvailableReplicas = 1
 	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
@@ -398,6 +403,49 @@ func TestFactorioRunningStatusAcknowledgesActiveConfigurationAndSecretRevision(t
 	}
 }
 
+func TestFactorioRolloutDoesNotAcknowledgeUntilOnlyUpdatedReplicaIsAvailable(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	gameServer.Generation = 9
+	gameServer.Status = plexusv1alpha1.GameServerStatus{
+		Phase: plexusv1alpha1.GameServerPhaseRunning, ActiveSetupID: "setup-1", ObservedGeneration: 8,
+		ObservedConfigurationGeneration: 8, ObservedSecretRevision: 3,
+	}
+	secret := testSetupSecret(t, gameServer)
+	secret.Annotations[factorio.SecretRevisionAnnotation] = "4"
+	reconciler, kubeClient := testReconcilerWithoutSecret(t, gameServer, secret)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+
+	reconcileTwice(t, ctx, reconciler, request)
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas = 2
+	deployment.Status.UpdatedReplicas = 1
+	deployment.Status.AvailableReplicas = 1
+	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.ObservedConfigurationGeneration != 8 || current.Status.ObservedSecretRevision != 3 {
+		t.Fatalf("rollout with an extra old replica acknowledged replacement inputs: %#v", current.Status)
+	}
+
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	deployment.Status.Replicas = 1
+	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.ObservedConfigurationGeneration != 9 || current.Status.ObservedSecretRevision != 4 {
+		t.Fatalf("completed rollout did not acknowledge replacement inputs: %#v", current.Status)
+	}
+}
+
 func TestFactorioRolloutKeepsPreviousPodTemplatePinnedToImmutableInputs(t *testing.T) {
 	ctx := context.Background()
 	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
@@ -417,6 +465,7 @@ func TestFactorioRolloutKeepsPreviousPodTemplatePinnedToImmutableInputs(t *testi
 	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
 	previousTemplate := deployment.Spec.Template.DeepCopy()
 	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas = 1
 	deployment.Status.UpdatedReplicas = 1
 	deployment.Status.AvailableReplicas = 1
 	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
@@ -432,6 +481,11 @@ func TestFactorioRolloutKeepsPreviousPodTemplatePinnedToImmutableInputs(t *testi
 		Username: testSecretValue("new-account"), Token: testSecretValue("new-token"), RCONPassword: testSecretValue("new-rcon"),
 	})
 	if err := kubeClient.Create(ctx, replacement); err != nil {
+		t.Fatal(err)
+	}
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	deployment.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType}
+	if err := kubeClient.Update(ctx, &deployment); err != nil {
 		t.Fatal(err)
 	}
 	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
@@ -454,6 +508,9 @@ func TestFactorioRolloutKeepsPreviousPodTemplatePinnedToImmutableInputs(t *testi
 
 	assertPodTemplateRuntimeInputs(t, previousTemplate, "factorio-1-config-g8", "factorio-1-runtime-g8-r3")
 	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	if deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+		t.Fatalf("configuration rollout strategy = %q, want Recreate to prevent overlapping PVC writers", deployment.Spec.Strategy.Type)
+	}
 	assertPodTemplateRuntimeInputs(t, &deployment.Spec.Template, "factorio-1-config-g9", "factorio-1-runtime-g9-r4")
 
 	var oldConfig corev1.ConfigMap
@@ -472,6 +529,7 @@ func TestFactorioRolloutKeepsPreviousPodTemplatePinnedToImmutableInputs(t *testi
 	}
 
 	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas = 1
 	deployment.Status.UpdatedReplicas = 1
 	deployment.Status.AvailableReplicas = 1
 	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {

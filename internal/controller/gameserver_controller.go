@@ -274,7 +274,8 @@ func deploymentRolloutAvailable(deployment *appsv1.Deployment) bool {
 		desiredReplicas = *deployment.Spec.Replicas
 	}
 	return deployment.Status.ObservedGeneration == deployment.Generation &&
-		deployment.Status.UpdatedReplicas >= desiredReplicas && deployment.Status.AvailableReplicas >= desiredReplicas
+		deployment.Status.Replicas == desiredReplicas && deployment.Status.UpdatedReplicas == desiredReplicas &&
+		deployment.Status.AvailableReplicas == desiredReplicas
 }
 
 func (r *GameServerReconciler) ensureRuntimeSecret(ctx context.Context, gameServer *plexusv1alpha1.GameServer, secrets factorio.Secrets, revision int64) (*corev1.Secret, error) {
@@ -478,6 +479,7 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 		}
 		replicas := int32(1)
 		deployment.Spec.Replicas = &replicas
+		deployment.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: selectorLabels(gameServer)}
 		deployment.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
