@@ -31,13 +31,14 @@ const (
 	// runtime resources have been removed.
 	GameServerFinalizer = "plexus.gg/runtime-cleanup"
 
-	conditionReady    = "Ready"
-	conditionStorage  = "StorageReady"
-	conditionEndpoint = "EndpointReady"
-	componentLabel    = "app.kubernetes.io/component"
-	componentValue    = "game-server"
-	dataVolumeName    = "game-data"
-	dataMountPath     = "/factorio"
+	conditionReady             = "Ready"
+	conditionStorage           = "StorageReady"
+	conditionEndpoint          = "EndpointReady"
+	componentLabel             = "app.kubernetes.io/component"
+	componentValue             = "game-server"
+	dataVolumeName             = "game-data"
+	dataMountPath              = "/factorio"
+	observationRefreshInterval = 30 * time.Second
 )
 
 // GameServerReconciler turns Factorio GameServers into their persistent
@@ -71,7 +72,7 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 	}
 
 	if err := validateDesiredState(&gameServer); err != nil {
-		return ctrl.Result{}, r.reportPermanentFailure(ctx, &gameServer, "InvalidDesiredState", err)
+		return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.reportPermanentFailure(ctx, &gameServer, "InvalidDesiredState", err)
 	}
 
 	if gameServer.Spec.SelectedSetup == nil {
@@ -82,7 +83,7 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 		if err == nil {
 			err = fmt.Errorf("game %q does not have a workload reconciler", definition.ID)
 		}
-		return ctrl.Result{}, r.reportPermanentFailure(ctx, &gameServer, "UnsupportedGame", err)
+		return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.reportPermanentFailure(ctx, &gameServer, "UnsupportedGame", err)
 	}
 	if gameServer.Spec.DesiredPower == plexusv1alpha1.DesiredPowerStopped {
 		handled, result, err := r.quiesceBeforeSecretValidation(ctx, &gameServer)
@@ -183,19 +184,19 @@ func (r *GameServerReconciler) reconcileRunning(ctx context.Context, gameServer 
 
 	endpoint, endpointReady := serviceEndpoint(service, definition.Ports[0])
 	if deployment.Status.AvailableReplicas < 1 {
-		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseProvisioning, "Waiting for the Factorio workload to become available")
+		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStarting, "Waiting for the Factorio workload to become available")
 		status.Endpoint = endpoint
 		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "WorkloadUnavailable", "Persistent storage and service are ready; the Factorio workload is not yet available")
 		setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is ready")
 		setEndpointCondition(&status, gameServer.Generation, endpointReady)
-		return ctrl.Result{}, r.updateStatus(ctx, gameServer, status)
+		return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
 	}
 	if !endpointReady {
-		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseProvisioning, "Factorio is running; waiting for a public service endpoint")
+		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStarting, "Factorio is running; waiting for a public service endpoint")
 		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "EndpointPending", "Factorio is available, but the load balancer has not assigned a public endpoint")
 		setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is ready")
 		setEndpointCondition(&status, gameServer.Generation, false)
-		return ctrl.Result{}, r.updateStatus(ctx, gameServer, status)
+		return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
 	}
 
 	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseRunning, "Factorio workload is running")
@@ -205,7 +206,7 @@ func (r *GameServerReconciler) reconcileRunning(ctx context.Context, gameServer 
 	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionTrue, "WorkloadAvailable", "Factorio workload is available")
 	setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is ready")
 	setEndpointCondition(&status, gameServer.Generation, true)
-	return ctrl.Result{}, r.updateStatus(ctx, gameServer, status)
+	return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
 }
 
 func (r *GameServerReconciler) reconcileStopped(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (ctrl.Result, error) {
@@ -232,7 +233,7 @@ func (r *GameServerReconciler) reconcileStopped(ctx context.Context, gameServer 
 	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "DesiredStopped", "No Factorio workload is running")
 	setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is retained")
 	setCondition(&status, gameServer.Generation, conditionEndpoint, metav1.ConditionFalse, "DesiredStopped", "A stopped server has no public endpoint")
-	return ctrl.Result{}, r.updateStatus(ctx, gameServer, status)
+	return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
 }
 
 func (r *GameServerReconciler) reconcileUnloaded(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (ctrl.Result, error) {
@@ -255,7 +256,7 @@ func (r *GameServerReconciler) reconcileUnloaded(ctx context.Context, gameServer
 
 	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStopped, "Server is unloaded and stopped; existing persistent storage is retained")
 	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "DesiredStopped", "No game workload is running")
-	return ctrl.Result{}, r.updateStatus(ctx, gameServer, status)
+	return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
 }
 
 func (r *GameServerReconciler) ensureMetadata(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (bool, error) {
@@ -460,7 +461,9 @@ func (r *GameServerReconciler) updateFailedStatus(ctx context.Context, gameServe
 func (r *GameServerReconciler) updateStatus(ctx context.Context, gameServer *plexusv1alpha1.GameServer, status plexusv1alpha1.GameServerStatus) error {
 	status.LastObservedAt = gameServer.Status.LastObservedAt
 	if reflect.DeepEqual(gameServer.Status, status) {
-		return nil
+		if status.LastObservedAt != nil && time.Since(status.LastObservedAt.Time) < observationRefreshInterval {
+			return nil
+		}
 	}
 	now := metav1.Now()
 	status.LastObservedAt = &now

@@ -215,6 +215,12 @@ and customer-action decisions. High-frequency CPU, memory, storage, and player
 telemetry remains in Prometheus or the Kubernetes metrics API, labeled
 consistently with `plexus.gg/server-id`.
 
+Running is reported only after the Deployment is available and its public
+endpoint is assigned. Stopped is reported only after the workload and Service
+are absent. Stable Running and Stopped observations are refreshed periodically
+so the backend can distinguish a healthy unchanged runtime from a stale
+controller observation.
+
 ## Safety & Invariants
 
 - Never mutate raw disk while the main game pod is running.

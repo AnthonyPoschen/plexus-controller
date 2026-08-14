@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -61,8 +62,11 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	if !containsString(current.Finalizers, GameServerFinalizer) {
 		t.Fatalf("GameServer finalizers = %#v", current.Finalizers)
 	}
-	if current.Status.Phase != plexusv1alpha1.GameServerPhaseProvisioning {
-		t.Fatalf("initial phase = %q, want Provisioning", current.Status.Phase)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStarting {
+		t.Fatalf("initial phase = %q, want Starting", current.Status.Phase)
+	}
+	if current.Spec.DesiredPower != plexusv1alpha1.DesiredPowerRunning {
+		t.Fatalf("controller status update overwrote desired power: %q", current.Spec.DesiredPower)
 	}
 	if current.Status.Endpoint != "" || conditionReason(current, conditionEndpoint) != "LoadBalancerPending" {
 		t.Fatalf("initial endpoint status = %#v", current.Status)
@@ -88,6 +92,19 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	if current.Status.Endpoint != "factorio.example.com:34197" {
 		t.Fatalf("running endpoint = %q", current.Status.Endpoint)
 	}
+	oldObservation := metav1.NewTime(time.Now().Add(-2 * time.Minute))
+	current.Status.LastObservedAt = &oldObservation
+	if err := kubeClient.Status().Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	result, err := reconciler.Reconcile(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if result.RequeueAfter <= 0 || current.Status.LastObservedAt == nil || !current.Status.LastObservedAt.After(oldObservation.Time) {
+		t.Fatalf("stable Running observation was not refreshed: result=%#v status=%#v", result, current.Status)
+	}
 
 	current.Spec.DesiredPower = plexusv1alpha1.DesiredPowerStopped
 	current.Generation++
@@ -95,6 +112,13 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconcileOnce(t, ctx, reconciler, request)
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStopping {
+		t.Fatalf("phase while workload deletion is pending = %q, want Stopping", current.Status.Phase)
+	}
+	if current.Spec.DesiredPower != plexusv1alpha1.DesiredPowerStopped {
+		t.Fatalf("controller status update overwrote Stop intent: %q", current.Spec.DesiredPower)
+	}
 	reconcileOnce(t, ctx, reconciler, request)
 
 	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
