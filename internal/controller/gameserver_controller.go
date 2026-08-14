@@ -39,6 +39,8 @@ const (
 	conditionStorage           = "StorageReady"
 	conditionEndpoint          = "EndpointReady"
 	conditionMods              = "ModsReady"
+	conditionShutdown          = "ShutdownProgress"
+	takingLongerThanExpected   = "Taking longer than expected"
 	dataVolumeName             = "game-data"
 	dataMountPath              = "/factorio"
 	configVolumeName           = "factorio-config"
@@ -56,6 +58,7 @@ const (
 type GameServerReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	Now    func() time.Time
 }
 
 // +kubebuilder:rbac:groups=plexus.gg,resources=gameservers,verbs=get;list;watch;update;patch
@@ -155,7 +158,7 @@ func (r *GameServerReconciler) quiesceBeforeSecretValidation(ctx context.Context
 	if deploymentDeleted == false && serviceDeleted == false {
 		return false, ctrl.Result{}, nil
 	}
-	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStopping, "Stopping the Factorio workload before validating sensitive configuration")
+	status := r.stoppingStatus(ctx, gameServer, "Stopping the Factorio workload before validating sensitive configuration")
 	status.ObservedGeneration = gameServer.Status.ObservedGeneration
 	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "WorkloadStopping", "Factorio is being stopped before the replacement setup Secret is acknowledged")
 	if err := r.updateStatus(ctx, gameServer, status); err != nil {
@@ -507,7 +510,7 @@ func (r *GameServerReconciler) reconcileStopped(ctx context.Context, gameServer 
 		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "ServiceCleanupFailed", err)
 	}
 	if deleted || serviceDeleted {
-		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStopping, "Stopping the Factorio workload; persistent storage is retained")
+		status := r.stoppingStatus(ctx, gameServer, "Stopping the Factorio workload; persistent storage is retained")
 		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "WorkloadStopping", "Factorio workload is being removed")
 		setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is retained")
 		setCondition(&status, gameServer.Generation, conditionEndpoint, metav1.ConditionFalse, "ServiceStopping", "Public endpoint is being removed")
@@ -521,6 +524,7 @@ func (r *GameServerReconciler) reconcileStopped(ctx context.Context, gameServer 
 	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "DesiredStopped", "No Factorio workload is running")
 	setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is retained")
 	setCondition(&status, gameServer.Generation, conditionEndpoint, metav1.ConditionFalse, "DesiredStopped", "A stopped server has no public endpoint")
+	setCondition(&status, gameServer.Generation, conditionShutdown, metav1.ConditionTrue, "DesiredStopped", "No Factorio workload is running")
 	return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
 }
 
@@ -952,6 +956,62 @@ func observedStatus(gameServer *plexusv1alpha1.GameServer, phase plexusv1alpha1.
 		Conditions:                append([]metav1.Condition(nil), gameServer.Status.Conditions...),
 		Message:                   message,
 	}
+}
+
+func (r *GameServerReconciler) stoppingStatus(ctx context.Context, gameServer *plexusv1alpha1.GameServer, gracefulMessage string) plexusv1alpha1.GameServerStatus {
+	message, reason := r.shutdownProgress(ctx, gameServer, gracefulMessage)
+	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStopping, message)
+	setCondition(&status, gameServer.Generation, conditionShutdown, metav1.ConditionFalse, reason, message)
+	return status
+}
+
+func (r *GameServerReconciler) shutdownProgress(ctx context.Context, gameServer *plexusv1alpha1.GameServer, gracefulMessage string) (string, string) {
+	if gameServer.Spec.ShutdownMode == plexusv1alpha1.ShutdownModeForce {
+		return "Force-stopping the Factorio workload; persistent storage is retained", "ForceStop"
+	}
+	if r.shutdownHasTimedOut(ctx, gameServer) {
+		return takingLongerThanExpected, "TakingLongerThanExpected"
+	}
+	return gracefulMessage, "GracefulShutdown"
+}
+
+func (r *GameServerReconciler) shutdownHasTimedOut(ctx context.Context, gameServer *plexusv1alpha1.GameServer) bool {
+	if gameServer.Spec.SelectedSetup == nil {
+		return false
+	}
+	definition, err := games.Get(gameServer.Spec.SelectedSetup.GameID)
+	if err != nil || definition.Shutdown.TimeoutSeconds < 1 {
+		return false
+	}
+	startedAt := shutdownStartedAt(ctx, r.Client, gameServer)
+	if startedAt.IsZero() {
+		return false
+	}
+	return !startedAt.After(r.now().Add(-time.Duration(definition.Shutdown.TimeoutSeconds) * time.Second))
+}
+
+func shutdownStartedAt(ctx context.Context, kubeClient client.Client, gameServer *plexusv1alpha1.GameServer) time.Time {
+	if condition := meta.FindStatusCondition(gameServer.Status.Conditions, conditionShutdown); condition != nil && condition.Status == metav1.ConditionFalse && !condition.LastTransitionTime.IsZero() {
+		return condition.LastTransitionTime.Time
+	}
+	if gameServer.Spec.SelectedSetup == nil {
+		return time.Time{}
+	}
+	deployment := &appsv1.Deployment{}
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(gameServer), deployment); err != nil {
+		return time.Time{}
+	}
+	if deployment.DeletionTimestamp.IsZero() {
+		return time.Time{}
+	}
+	return deployment.DeletionTimestamp.Time
+}
+
+func (r *GameServerReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 func setCondition(status *plexusv1alpha1.GameServerStatus, generation int64, conditionType string, conditionStatus metav1.ConditionStatus, reason string, message string) {
