@@ -246,6 +246,13 @@ spec:
                 description: Message is a human-readable explanation of the current
                   state.
                 type: string
+              observedConfigurationGeneration:
+                description: |-
+                  ObservedConfigurationGeneration is the GameServer generation whose
+                  selected setup configuration is active in the available workload.
+                format: int64
+                minimum: 0
+                type: integer
               observedGeneration:
                 description: ObservedGeneration is the latest GameServer metadata
                   generation observed.
@@ -255,6 +262,13 @@ spec:
               observedRestartGeneration:
                 description: ObservedRestartGeneration is the latest restart request
                   observed.
+                format: int64
+                minimum: 0
+                type: integer
+              observedSecretRevision:
+                description: |-
+                  ObservedSecretRevision is the setup Secret revision active in the
+                  available workload. It never contains Secret material.
                 format: int64
                 minimum: 0
                 type: integer

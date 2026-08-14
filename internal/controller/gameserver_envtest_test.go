@@ -63,7 +63,7 @@ func TestFactorioRunningStoppedEnvtest(t *testing.T) {
 	gameServer.UID = ""
 	gameServer.ResourceVersion = ""
 	gameServer.Generation = 0
-	if err := kubeClient.Create(ctx, testSetupSecret(gameServer)); err != nil {
+	if err := kubeClient.Create(ctx, testSetupSecret(t, gameServer)); err != nil {
 		t.Fatal(err)
 	}
 	if err := kubeClient.Create(ctx, gameServer); err != nil {
@@ -79,7 +79,10 @@ func TestFactorioRunningStoppedEnvtest(t *testing.T) {
 	var service corev1.Service
 	get(t, ctx, kubeClient, request.NamespacedName, &service)
 	get(t, ctx, kubeClient, request.NamespacedName, &corev1.PersistentVolumeClaim{})
+	deployment.Status.Replicas = 1
 	deployment.Status.AvailableReplicas = 1
+	deployment.Status.UpdatedReplicas = 1
+	deployment.Status.ObservedGeneration = deployment.Generation
 	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
 		t.Fatal(err)
 	}
