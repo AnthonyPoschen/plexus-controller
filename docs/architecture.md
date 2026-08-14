@@ -215,11 +215,14 @@ and customer-action decisions. High-frequency CPU, memory, storage, and player
 telemetry remains in Prometheus or the Kubernetes metrics API, labeled
 consistently with `plexus.gg/server-id`.
 
-Running is reported only after the Deployment is available and its public
-endpoint is assigned. Stopped is reported only after the workload and Service
-are absent. Stable Running and Stopped observations are refreshed periodically
-so the backend can distinguish a healthy unchanged runtime from a stale
-controller observation.
+Running is reported only after the Deployment controller has observed the
+current revision, an updated replica is available, and its public endpoint is
+assigned. For Factorio, stop and restart use the adapter's `rcon /quit`
+graceful-shutdown hook and 90-second timeout. Restart uses a Recreate rollout so
+the old game process is shut down before its replacement starts. Stopped is
+reported only after the workload and Service are absent. Stable Running and
+Stopped observations are refreshed periodically so the backend can distinguish
+a healthy unchanged runtime from a stale controller observation.
 
 ## Safety & Invariants
 

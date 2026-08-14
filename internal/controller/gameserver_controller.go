@@ -183,7 +183,14 @@ func (r *GameServerReconciler) reconcileRunning(ctx context.Context, gameServer 
 	}
 
 	endpoint, endpointReady := serviceEndpoint(service, definition.Ports[0])
-	if deployment.Status.AvailableReplicas < 1 {
+	desiredReplicas := int32(1)
+	if deployment.Spec.Replicas != nil {
+		desiredReplicas = *deployment.Spec.Replicas
+	}
+	if deployment.Status.ObservedGeneration != deployment.Generation ||
+		deployment.Status.Replicas != desiredReplicas ||
+		deployment.Status.UpdatedReplicas != desiredReplicas ||
+		deployment.Status.AvailableReplicas != desiredReplicas {
 		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStarting, "Waiting for the Factorio workload to become available")
 		status.Endpoint = endpoint
 		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "WorkloadUnavailable", "Persistent storage and service are ready; the Factorio workload is not yet available")
@@ -325,8 +332,12 @@ func (r *GameServerReconciler) ensureService(ctx context.Context, gameServer *pl
 }
 
 func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition) (*appsv1.Deployment, error) {
+	lifecycle, terminationGracePeriod, err := gracefulShutdownLifecycle(gameServer, definition)
+	if err != nil {
+		return nil, err
+	}
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: gameServer.Name, Namespace: gameServer.Namespace}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
 		if deployment.ResourceVersion != "" {
 			if err := ensureControlledBy(gameServer, deployment); err != nil {
 				return err
@@ -338,6 +349,7 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 		}
 		replicas := int32(1)
 		deployment.Spec.Replicas = &replicas
+		deployment.Spec.Strategy.Type = appsv1.RecreateDeploymentStrategyType
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: selectorLabels(gameServer)}
 		deployment.Spec.Template = corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{
@@ -345,12 +357,14 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 				Annotations: map[string]string{"plexus.gg/restart-generation": fmt.Sprint(gameServer.Spec.RestartGeneration)},
 			},
 			Spec: corev1.PodSpec{
+				TerminationGracePeriodSeconds: terminationGracePeriod,
 				Containers: []corev1.Container{{
 					Name:         factorio.GameID,
 					Image:        definition.DefaultImage,
 					Env:          environment(definition),
 					Ports:        containerPorts(definition),
 					VolumeMounts: []corev1.VolumeMount{{Name: dataVolumeName, MountPath: dataMountPath}},
+					Lifecycle:    lifecycle,
 				}},
 				Volumes: []corev1.Volume{{Name: dataVolumeName, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: gameServer.Name}}}},
 			},
@@ -358,6 +372,20 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 		return nil
 	})
 	return deployment, err
+}
+
+func gracefulShutdownLifecycle(gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition) (*corev1.Lifecycle, *int64, error) {
+	if gameServer.Spec.ShutdownMode != plexusv1alpha1.ShutdownModeGraceful {
+		return nil, nil, nil
+	}
+	policy := definition.Shutdown
+	if policy.Strategy != "rcon-command" || policy.Command == "" || policy.TimeoutSeconds < 1 {
+		return nil, nil, fmt.Errorf("game %q has no supported graceful shutdown policy", definition.ID)
+	}
+	timeout := int64(policy.TimeoutSeconds)
+	return &corev1.Lifecycle{
+		PreStop: &corev1.LifecycleHandler{Exec: &corev1.ExecAction{Command: []string{"rcon", policy.Command}}},
+	}, &timeout, nil
 }
 
 func (r *GameServerReconciler) reconcileDelete(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (ctrl.Result, error) {

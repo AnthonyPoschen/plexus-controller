@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	factorio "github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/factorio/v1"
+	"github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/model"
 )
 
 // GameDefinition contains all the controller-owned defaults and behavior
@@ -41,6 +42,10 @@ type GameDefinition struct {
 
 	// Ports the game listens on (used for Service creation).
 	Ports []GamePort
+
+	// Shutdown is the adapter-owned graceful shutdown contract used when a
+	// workload is stopped or replaced.
+	Shutdown model.ShutdownPolicy
 }
 
 type GamePort struct {
@@ -85,6 +90,7 @@ var Registry = map[string]GameDefinition{
 			{Name: "game", Port: 34197, Protocol: "UDP"},
 			{Name: "rcon", Port: 27015, Protocol: "TCP"},
 		},
+		Shutdown: factorio.Schema().Shutdown,
 		ConfigLayer: ConfigLayer{
 			Templates: []ConfigTemplate{
 				{

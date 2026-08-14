@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,17 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	if got := deployment.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath; got != "/factorio" {
 		t.Fatalf("persistent mount path = %q", got)
 	}
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+		t.Fatalf("Factorio rollout strategy = %q, want Recreate", deployment.Spec.Strategy.Type)
+	}
+	if container.Lifecycle == nil || container.Lifecycle.PreStop == nil || container.Lifecycle.PreStop.Exec == nil ||
+		!reflect.DeepEqual(container.Lifecycle.PreStop.Exec.Command, []string{"rcon", "/quit"}) {
+		t.Fatalf("Factorio graceful shutdown hook = %#v", container.Lifecycle)
+	}
+	if deployment.Spec.Template.Spec.TerminationGracePeriodSeconds == nil || *deployment.Spec.Template.Spec.TerminationGracePeriodSeconds != 90 {
+		t.Fatalf("Factorio termination grace period = %#v", deployment.Spec.Template.Spec.TerminationGracePeriodSeconds)
+	}
 
 	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
 	if current.Labels[plexusv1alpha1.LabelServerID] != "server-1" || current.Labels[plexusv1alpha1.LabelOwnerUserID] != "user-1" || current.Labels[plexusv1alpha1.LabelGameID] != "factorio" {
@@ -72,6 +84,9 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 		t.Fatalf("initial endpoint status = %#v", current.Status)
 	}
 
+	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas = 1
+	deployment.Status.UpdatedReplicas = 1
 	deployment.Status.AvailableReplicas = 1
 	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
 		t.Fatal(err)
@@ -158,6 +173,78 @@ func TestFactorioReconcileReportsFailedForInvalidSchema(t *testing.T) {
 	}
 	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("invalid setup Deployment lookup error = %v, want NotFound", err)
+	}
+}
+
+func TestFactorioRestartWaitsForTheReplacementDeploymentRevision(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	reconciler, kubeClient := testReconciler(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	var service corev1.Service
+	get(t, ctx, kubeClient, request.NamespacedName, &service)
+	service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{Hostname: "factorio.example.test"}}
+	if err := kubeClient.Status().Update(ctx, &service); err != nil {
+		t.Fatal(err)
+	}
+	deployment.Generation = 1
+	if err := kubeClient.Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	deployment.Status.ObservedGeneration = 1
+	deployment.Status.Replicas = 1
+	deployment.Status.UpdatedReplicas = 1
+	deployment.Status.AvailableReplicas = 1
+	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	current.Spec.RestartGeneration = 1
+	current.Generation = 2
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	deployment.Generation = 2
+	deployment.Status.ObservedGeneration = 1
+	deployment.Status.Replicas = 2
+	deployment.Status.UpdatedReplicas = 1
+	deployment.Status.AvailableReplicas = 1
+	if err := kubeClient.Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	if deployment.Spec.Template.Annotations["plexus.gg/restart-generation"] != "1" {
+		t.Fatalf("replacement pod template restart generation = %#v", deployment.Spec.Template.Annotations)
+	}
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStarting || current.Status.ObservedRestartGeneration != 0 {
+		t.Fatalf("old available pod acknowledged Restart: %#v", current.Status)
+	}
+
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas = 1
+	deployment.Status.UpdatedReplicas = 1
+	deployment.Status.AvailableReplicas = 1
+	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseRunning || current.Status.ObservedRestartGeneration != 1 {
+		t.Fatalf("replacement deployment was not acknowledged: %#v", current.Status)
 	}
 }
 
