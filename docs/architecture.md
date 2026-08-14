@@ -153,6 +153,7 @@ For easy `kubectl` / observability queries, the controller should apply consiste
 
 - `plexus.gg/owner-user-id: <value>`
 - `plexus.gg/server-id: <value>`
+- `plexus.gg/gameserver-uid: <GameServer metadata.uid>`
 - `plexus.gg/game-id: <value>`
 
 This allows commands like:
@@ -238,11 +239,19 @@ and customer-action decisions. High-frequency CPU, memory, storage, and player
 telemetry remains in Prometheus or the Kubernetes metrics API, labeled
 consistently with `plexus.gg/server-id`.
 
-Running is reported only after the Deployment is available and its public
-endpoint is assigned. Stopped is reported only after the workload and Service
-are absent. Stable Running and Stopped observations are refreshed periodically
-so the backend can distinguish a healthy unchanged runtime from a stale
-controller observation.
+Running is reported only after the Deployment controller has observed the
+current revision, an updated replica is available, and its public endpoint is
+assigned. Every Factorio pod carries the adapter's `rcon /quit`
+graceful-shutdown hook and 90-second timeout, so current Graceful stop intent is
+not dependent on the mode used when the pod was created. Force stop intent
+deletes UID-bound live pods with zero grace, including escalation of an
+in-progress graceful stop. Pods created before the UID label was introduced are
+not force-deleted; normal Kubernetes ownership cleanup remains responsible for
+them. Restart uses a Recreate rollout so the old game process is shut
+down before its replacement starts. Stopped is reported only after the workload
+and Service are absent. Stable Running and Stopped observations are refreshed
+periodically so the backend can distinguish a healthy unchanged runtime from a
+stale controller observation.
 
 ## Safety & Invariants
 
