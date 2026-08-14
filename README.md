@@ -47,6 +47,12 @@ make install
 make run
 ```
 
+Managed Factorio export additionally requires publishing
+`Dockerfile.save-exporter` and setting `PLEXUS_SAVE_EXPORTER_IMAGE` on the
+controller manager to that immutable image reference. The backend supplies the
+expiring S3-compatible upload authorization; the exporter image contains no
+object-storage credentials.
+
 The focused reconciler suite uses a fake Kubernetes client during ordinary test
 runs. A repeatable API-server integration scenario is also available when
 local envtest binaries are installed:

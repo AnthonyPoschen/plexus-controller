@@ -261,8 +261,8 @@
     },
     {
       "id": "saves",
-      "released": false,
-      "description": "Validated save import and export."
+      "released": true,
+      "description": "Validated save export; import remains unavailable."
     },
     {
       "id": "console",
@@ -308,7 +308,7 @@
   },
   "saves": {
     "importReleased": false,
-    "exportReleased": false,
+    "exportReleased": true,
     "requiresStopped": true,
     "destructiveImport": true,
     "leavesServerStopped": true,

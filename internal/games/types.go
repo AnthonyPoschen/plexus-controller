@@ -36,6 +36,10 @@ type GameDefinition struct {
 	// via an editor pod when the main game server is stopped.
 	RawDiskPaths []string
 
+	// SaveExport declares the only PVC path a managed save export may read.
+	// It is controller-owned and is never supplied by a customer request.
+	SaveExport *SaveExportDefinition
+
 	// DefaultEnv are environment variables the controller will set unless
 	// the user overrides them.
 	DefaultEnv map[string]string
@@ -47,6 +51,21 @@ type GameDefinition struct {
 	// workload is stopped or replaced.
 	Shutdown model.ShutdownPolicy
 }
+
+type SaveExportDefinition struct {
+	PVCSubPath   string
+	SourceLayout SaveExportSourceLayout
+	Selection    SaveExportSelection
+	ArchiveName  string
+}
+
+type SaveExportSourceLayout string
+
+const SaveExportSourceArchiveDirectory SaveExportSourceLayout = "archive-directory"
+
+type SaveExportSelection string
+
+const SaveExportSelectLatestModifiedArchive SaveExportSelection = "latest-modified-archive"
 
 type GamePort struct {
 	Name     string
@@ -83,6 +102,10 @@ var Registry = map[string]GameDefinition{
 		MinDiskGiB:              10,
 		RecommendedDiskGiB:      50,
 		RawDiskPaths:            []string{"/saves", "/mods"},
+		SaveExport: &SaveExportDefinition{
+			PVCSubPath: "saves", SourceLayout: SaveExportSourceArchiveDirectory,
+			Selection: SaveExportSelectLatestModifiedArchive, ArchiveName: "factorio-save.zip",
+		},
 		DefaultEnv: map[string]string{
 			"FACTORIO_SERVER_NAME": "Plexus Factorio Server",
 		},
