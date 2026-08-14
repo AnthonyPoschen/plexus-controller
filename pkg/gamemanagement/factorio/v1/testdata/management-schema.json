@@ -262,7 +262,7 @@
     {
       "id": "saves",
       "released": true,
-      "description": "Validated save export; import remains unavailable."
+      "description": "Validated save export and destructive hosted-save replacement."
     },
     {
       "id": "console",
@@ -307,7 +307,7 @@
     "forceSupported": true
   },
   "saves": {
-    "importReleased": false,
+    "importReleased": true,
     "exportReleased": true,
     "requiresStopped": true,
     "destructiveImport": true,

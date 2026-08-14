@@ -64,6 +64,16 @@ on success or failure. A bounded, redacted stage diagnostic and actual archive
 size are recorded in terminal status before backend cleanup can delete the
 managed operation; otherwise the Job remains only until expiry.
 
+Factorio import is the matching destructive replacement tracer. A backend-
+authored `SaveImport` carries the same owner/server/setup/game identity, an
+immutable Secret reference for one expiring object-storage GET, a sanitized
+archive name, and an expiry—never a filesystem path or upload URL. The Job
+mounts only the adapter's `saves` PVC subpath writable plus an emptyDir
+workspace. It downloads the already-validated archive, validates it again,
+replaces only regular `*.zip` save archives in that directory, and never
+changes `desiredPower`. Failure diagnostics stay honest: they do not claim an
+automatic recovery snapshot. The Server remains Stopped.
+
 While the Job runs, the exporter emits at most nine coarse JSON milestones for
 archive selection, validation, and upload. The controller samples only the
 last 16 Pod-log lines (capped at 8 KiB), accepts allowlisted stages and

@@ -58,7 +58,7 @@ func Schema() model.ManagementSchema {
 		Capabilities: []model.Capability{
 			{ID: "configuration", Released: false, Description: "Tailored server settings backed by the typed Factorio configuration."},
 			{ID: "mods", Released: true, Description: "Provider-backed Factorio mod management."},
-			{ID: "saves", Released: true, Description: "Validated save export; import remains unavailable."},
+			{ID: "saves", Released: true, Description: "Validated save export and destructive hosted-save replacement."},
 			{ID: "console", Released: false, Description: "Interactive Factorio administration over RCON."},
 			{ID: "logs", Released: true, Description: "Read-only live container and Factorio log output."},
 		},
@@ -69,7 +69,7 @@ func Schema() model.ManagementSchema {
 		}},
 		Shutdown: model.ShutdownPolicy{Strategy: "rcon-command", Command: "/quit", TimeoutSeconds: 90, ForceSupported: true},
 		Saves: model.SavePolicy{
-			ImportReleased: false, ExportReleased: true, RequiresStopped: true,
+			ImportReleased: true, ExportReleased: true, RequiresStopped: true,
 			DestructiveImport: true, LeavesServerStopped: true, ArchiveFormat: "zip",
 			MediaTypes: []string{"application/zip"}, FileExtensions: []string{".zip"},
 			RequiredEntries: []string{levelEntryName, levelInitEntryName}, MaximumArchiveBytes: MaximumSaveArchiveBytes,

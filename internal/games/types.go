@@ -40,6 +40,10 @@ type GameDefinition struct {
 	// It is controller-owned and is never supplied by a customer request.
 	SaveExport *SaveExportDefinition
 
+	// SaveImport declares the only PVC path a managed save replacement may write.
+	// It is controller-owned and is never supplied by a customer request.
+	SaveImport *SaveImportDefinition
+
 	// DefaultEnv are environment variables the controller will set unless
 	// the user overrides them.
 	DefaultEnv map[string]string
@@ -66,6 +70,20 @@ const SaveExportSourceArchiveDirectory SaveExportSourceLayout = "archive-directo
 type SaveExportSelection string
 
 const SaveExportSelectLatestModifiedArchive SaveExportSelection = "latest-modified-archive"
+
+type SaveImportDefinition struct {
+	PVCSubPath   string
+	TargetLayout SaveImportTargetLayout
+	Replacement  SaveImportReplacement
+}
+
+type SaveImportTargetLayout string
+
+const SaveImportTargetArchiveDirectory SaveImportTargetLayout = "archive-directory"
+
+type SaveImportReplacement string
+
+const SaveImportReplaceArchives SaveImportReplacement = "replace-archives"
 
 type GamePort struct {
 	Name     string
@@ -105,6 +123,10 @@ var Registry = map[string]GameDefinition{
 		SaveExport: &SaveExportDefinition{
 			PVCSubPath: "saves", SourceLayout: SaveExportSourceArchiveDirectory,
 			Selection: SaveExportSelectLatestModifiedArchive, ArchiveName: "factorio-save.zip",
+		},
+		SaveImport: &SaveImportDefinition{
+			PVCSubPath: "saves", TargetLayout: SaveImportTargetArchiveDirectory,
+			Replacement: SaveImportReplaceArchives,
 		},
 		DefaultEnv: map[string]string{
 			"FACTORIO_SERVER_NAME": "Plexus Factorio Server",

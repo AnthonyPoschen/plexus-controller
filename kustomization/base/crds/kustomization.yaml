@@ -4,3 +4,4 @@ kind: Kustomization
 resources:
   - plexus.gg_gameservers.yaml
   - plexus.gg_saveexports.yaml
+  - plexus.gg_saveimports.yaml

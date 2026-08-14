@@ -115,8 +115,10 @@ Exit criteria:
 
 Factorio export is delivered as the first tracer: `SaveExport` drives a
 short-lived, adapter-path-scoped Job and expiring object-storage upload while
-both backend and controller enforce fresh stopped/setup identity. Import and
-other game adapters remain in this phase.
+both backend and controller enforce fresh stopped/setup identity. Factorio
+import is the matching destructive tracer: `SaveImport` downloads a validated
+archive, replaces only adapter-declared save data, and leaves the Server
+stopped. Other game adapters remain in this phase.
 
 - Object storage handoff support (backend provides pre-signed URLs).
 - Controller-driven jobs or steps inside the editor pod context that safely copy archives between object storage and the PVC.

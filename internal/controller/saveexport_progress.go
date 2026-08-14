@@ -25,16 +25,25 @@ type SaveExportProgressReader interface {
 }
 
 type podLogProgressReader struct {
-	pods typedcorev1.PodsGetter
+	pods      typedcorev1.PodsGetter
+	container string
 }
 
 func NewPodLogProgressReader(pods typedcorev1.PodsGetter) SaveExportProgressReader {
-	return &podLogProgressReader{pods: pods}
+	return NewPodLogProgressReaderFor(pods, saveExporterContainer)
+}
+
+func NewPodLogProgressReaderFor(pods typedcorev1.PodsGetter, container string) SaveExportProgressReader {
+	return &podLogProgressReader{pods: pods, container: container}
 }
 
 func (reader *podLogProgressReader) Latest(ctx context.Context, namespace string, podName string) (exporterProgress, bool, error) {
+	container := reader.container
+	if container == "" {
+		container = saveExporterContainer
+	}
 	data, err := reader.pods.Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
-		Container:  saveExporterContainer,
+		Container:  container,
 		TailLines:  int64Pointer(saveExportProgressTailLines),
 		LimitBytes: int64Pointer(saveExportProgressLimitBytes),
 	}).DoRaw(ctx)
