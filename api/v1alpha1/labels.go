@@ -5,8 +5,10 @@ package v1alpha1
 //
 // These labels enable easy cross-resource lookup by customer, server, or game.
 const (
-	LabelServerID    = "plexus.gg/server-id"
-	LabelOwnerUserID = "plexus.gg/owner-user-id"
-	LabelGameID      = "plexus.gg/game-id"
-	LabelSetupID     = "plexus.gg/setup-id"
+	LabelServerID       = "plexus.gg/server-id"
+	LabelOwnerUserID    = "plexus.gg/owner-user-id"
+	LabelGameID         = "plexus.gg/game-id"
+	LabelSetupID        = "plexus.gg/setup-id"
+	LabelComponent      = "app.kubernetes.io/component"
+	ComponentGameServer = "game-server"
 )
