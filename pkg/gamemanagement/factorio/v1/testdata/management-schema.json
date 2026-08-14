@@ -256,7 +256,7 @@
     },
     {
       "id": "mods",
-      "released": false,
+      "released": true,
       "description": "Provider-backed Factorio mod management."
     },
     {
@@ -331,8 +331,8 @@
     "providerID": "factorio-mod-portal",
     "providerName": "Factorio Mod Portal",
     "providerURL": "https://mods.factorio.com",
-    "released": false,
-    "nativeDiscovery": true,
+    "released": true,
+    "nativeDiscovery": false,
     "directReference": true,
     "dependencyResolution": "provider-metadata",
     "versionSelection": "latest-compatible",

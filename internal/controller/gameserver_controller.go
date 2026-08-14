@@ -38,6 +38,7 @@ const (
 	conditionReady             = "Ready"
 	conditionStorage           = "StorageReady"
 	conditionEndpoint          = "EndpointReady"
+	conditionMods              = "ModsReady"
 	dataVolumeName             = "game-data"
 	dataMountPath              = "/factorio"
 	configVolumeName           = "factorio-config"
@@ -45,6 +46,8 @@ const (
 	configFileName             = "server-settings.json"
 	configMountPath            = "/factorio/config"
 	configSourcePath           = "/plexus/config"
+	modSourceName              = "factorio-mod-source"
+	modSourcePath              = "/plexus/mod"
 	observationRefreshInterval = 30 * time.Second
 )
 
@@ -123,6 +126,12 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 		}
 		return ctrl.Result{RequeueAfter: observationRefreshInterval}, nil
 	}
+	if err := r.validateModArtifacts(ctx, &gameServer); err != nil {
+		if statusErr := r.reportUnobservedFailure(ctx, &gameServer, "ModArtifactInvalid", err); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{RequeueAfter: observationRefreshInterval}, nil
+	}
 
 	if _, err := r.ensurePVC(ctx, &gameServer, definition); err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, &gameServer, "StorageReconcileFailed", err)
@@ -190,6 +199,45 @@ func (r *GameServerReconciler) validateSetupSecret(ctx context.Context, gameServ
 	return secrets, revision, nil
 }
 
+func (r *GameServerReconciler) validateModArtifacts(ctx context.Context, gameServer *plexusv1alpha1.GameServer) error {
+	mods := gameServer.Spec.SelectedSetup.Mods
+	if len(mods) > 1 {
+		return fmt.Errorf("Factorio one-mod tracer accepts at most one enabled mod")
+	}
+	for _, mod := range mods {
+		release := factorio.ModRelease{ProviderID: mod.ProviderID, ProviderModID: mod.ProviderModID, Name: mod.Name, Version: mod.Version, GameVersion: mod.GameVersion, Dependencies: mod.Dependencies}
+		if err := factorio.ValidateModRelease(release); err != nil {
+			return err
+		}
+		if mod.ArchiveFileName != mod.Name+"_"+mod.Version+".zip" || strings.TrimSpace(mod.ArtifactRef) == "" {
+			return fmt.Errorf("mod artifact identity is invalid")
+		}
+		secret := &corev1.Secret{}
+		key := client.ObjectKey{Namespace: gameServer.Namespace, Name: mod.ArtifactRef}
+		if err := r.Get(ctx, key, secret); err != nil {
+			return fmt.Errorf("read staged mod artifact %q: %w", key.Name, err)
+		}
+		if secret.Labels[plexusv1alpha1.LabelServerID] != gameServer.Spec.ServerID || secret.Labels[plexusv1alpha1.LabelOwnerUserID] != gameServer.Spec.OwnerUserID ||
+			secret.Labels[plexusv1alpha1.LabelGameID] != gameServer.Spec.SelectedSetup.GameID || secret.Labels[plexusv1alpha1.LabelSetupID] != gameServer.Spec.SelectedSetup.ID {
+			return fmt.Errorf("staged mod artifact %q has different ownership", key.Name)
+		}
+		if err := ensureControlledBy(gameServer, secret); err != nil {
+			return fmt.Errorf("staged mod artifact %q has different controller ownership", key.Name)
+		}
+		if secret.Annotations[factorio.ModProviderAnnotation] != mod.ProviderID || secret.Annotations[factorio.ModIDAnnotation] != mod.ProviderModID ||
+			secret.Annotations[factorio.ModVersionAnnotation] != mod.Version || secret.Annotations[factorio.ModSHA256Annotation] != mod.ArchiveSHA256 {
+			return fmt.Errorf("staged mod artifact %q metadata does not match desired selection", key.Name)
+		}
+		if secret.Immutable == nil || *secret.Immutable == false || secret.Type != corev1.SecretTypeOpaque || len(secret.Data) != 1 {
+			return fmt.Errorf("staged mod artifact %q must be an immutable single-file artifact", key.Name)
+		}
+		if err := factorio.ValidateModArchive(release, secret.Data[factorio.ModArtifactDataKey], mod.ArchiveSHA256); err != nil {
+			return fmt.Errorf("staged mod artifact %q: %w", key.Name, err)
+		}
+	}
+	return nil
+}
+
 type setupSecretMigrationError struct {
 	name          string
 	schemaVersion string
@@ -225,6 +273,17 @@ func (r *GameServerReconciler) reconcileRunning(ctx context.Context, gameServer 
 	if err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "WorkloadReconcileFailed", err)
 	}
+	if failure, err := r.workloadFailure(ctx, gameServer, deployment); err != nil {
+		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "WorkloadObservationFailed", err)
+	} else if failure != nil {
+		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseFailed, failure.message)
+		preserveActiveRevision(&status, gameServer.Status)
+		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, failure.reason, status.Message)
+		if failure.reason == "ModInstallFailed" {
+			setCondition(&status, gameServer.Generation, conditionMods, metav1.ConditionFalse, failure.reason, status.Message)
+		}
+		return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
+	}
 
 	endpoint, endpointReady := serviceEndpoint(service, definition.Ports[0])
 	if deploymentRolloutAvailable(deployment) == false {
@@ -239,18 +298,22 @@ func (r *GameServerReconciler) reconcileRunning(ctx context.Context, gameServer 
 	if !endpointReady {
 		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStarting, "Factorio is running; waiting for a public service endpoint")
 		acknowledgeActiveRevision(&status, gameServer, secretRevision)
+		acknowledgeInstalledMods(&status, gameServer)
 		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "EndpointPending", "Factorio is available, but the load balancer has not assigned a public endpoint")
 		setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is ready")
 		setEndpointCondition(&status, gameServer.Generation, false)
+		setCondition(&status, gameServer.Generation, conditionMods, metav1.ConditionTrue, "ModsInstalled", "Enabled Factorio mod selection was installed by the available workload")
 		return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
 	}
 
 	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseRunning, "Factorio workload is running")
 	acknowledgeActiveRevision(&status, gameServer, secretRevision)
+	acknowledgeInstalledMods(&status, gameServer)
 	status.Endpoint = endpoint
 	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionTrue, "WorkloadAvailable", "Factorio workload is available")
 	setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is ready")
 	setEndpointCondition(&status, gameServer.Generation, true)
+	setCondition(&status, gameServer.Generation, conditionMods, metav1.ConditionTrue, "ModsInstalled", "Enabled Factorio mod selection was installed by the available workload")
 	return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
 }
 
@@ -265,6 +328,91 @@ func preserveActiveRevision(status *plexusv1alpha1.GameServerStatus, previous pl
 	status.ActiveSetupID = previous.ActiveSetupID
 	status.ObservedConfigurationGeneration = previous.ObservedConfigurationGeneration
 	status.ObservedSecretRevision = previous.ObservedSecretRevision
+	status.InstalledMods = append([]plexusv1alpha1.InstalledMod(nil), previous.InstalledMods...)
+	status.InstalledModsGeneration = previous.InstalledModsGeneration
+}
+
+func acknowledgeInstalledMods(status *plexusv1alpha1.GameServerStatus, gameServer *plexusv1alpha1.GameServer) {
+	status.InstalledMods = observedInstalledMods(gameServer.Spec.SelectedSetup.Mods)
+	status.InstalledModsGeneration = gameServer.Generation
+}
+
+func observedInstalledMods(mods []plexusv1alpha1.ModSpec) []plexusv1alpha1.InstalledMod {
+	installed := make([]plexusv1alpha1.InstalledMod, 0, len(mods))
+	for _, mod := range mods {
+		installed = append(installed, plexusv1alpha1.InstalledMod{ProviderID: mod.ProviderID, ProviderModID: mod.ProviderModID, Name: mod.Name, Version: mod.Version})
+	}
+	return installed
+}
+
+type observedWorkloadFailure struct{ reason, message string }
+
+func (r *GameServerReconciler) workloadFailure(ctx context.Context, gameServer *plexusv1alpha1.GameServer, deployment *appsv1.Deployment) (*observedWorkloadFailure, error) {
+	pods, err := r.ownedDeploymentPods(ctx, gameServer, deployment)
+	if err != nil {
+		return nil, err
+	}
+	for _, pod := range pods {
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse && condition.Reason == corev1.PodReasonUnschedulable {
+				return &observedWorkloadFailure{reason: "WorkloadSchedulingFailed", message: "Factorio workload could not be scheduled"}, nil
+			}
+		}
+		for _, status := range append(append([]corev1.ContainerStatus(nil), pod.Status.InitContainerStatuses...), pod.Status.ContainerStatuses...) {
+			if status.State.Waiting != nil && imageFailureReason(status.State.Waiting.Reason) {
+				return &observedWorkloadFailure{reason: "WorkloadImagePullFailed", message: "Factorio workload image could not be pulled"}, nil
+			}
+			if status.State.Terminated == nil || status.State.Terminated.ExitCode == 0 {
+				continue
+			}
+			if status.Name == "factorio-mod-sync" && len(gameServer.Spec.SelectedSetup.Mods) != 0 {
+				return &observedWorkloadFailure{reason: "ModInstallFailed", message: "Factorio mod synchronization failed before workload startup"}, nil
+			}
+			return &observedWorkloadFailure{reason: "WorkloadInitializationFailed", message: "Factorio workload initialization failed"}, nil
+		}
+	}
+	for _, condition := range deployment.Status.Conditions {
+		if condition.Status != corev1.ConditionTrue {
+			continue
+		}
+		if condition.Type == appsv1.DeploymentReplicaFailure || (condition.Type == appsv1.DeploymentProgressing && condition.Reason == "ProgressDeadlineExceeded") {
+			return &observedWorkloadFailure{reason: "WorkloadRolloutFailed", message: "Factorio workload rollout failed"}, nil
+		}
+	}
+	return nil, nil
+}
+
+func imageFailureReason(reason string) bool {
+	return reason == "ErrImagePull" || reason == "ImagePullBackOff" || reason == "InvalidImageName"
+}
+
+func (r *GameServerReconciler) ownedDeploymentPods(ctx context.Context, gameServer *plexusv1alpha1.GameServer, deployment *appsv1.Deployment) ([]corev1.Pod, error) {
+	var podList corev1.PodList
+	if err := r.List(ctx, &podList, client.InNamespace(gameServer.Namespace), client.MatchingLabels(selectorLabels(gameServer))); err != nil {
+		return nil, err
+	}
+	owned := make([]corev1.Pod, 0, len(podList.Items))
+	for _, pod := range podList.Items {
+		if pod.Annotations["plexus.gg/configuration-generation"] != fmt.Sprint(gameServer.Generation) {
+			continue
+		}
+		controller := metav1.GetControllerOf(&pod)
+		if controller == nil || controller.Kind != "ReplicaSet" {
+			continue
+		}
+		var replicaSet appsv1.ReplicaSet
+		if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: controller.Name}, &replicaSet); err != nil {
+			if client.IgnoreNotFound(err) == nil {
+				continue
+			}
+			return nil, err
+		}
+		replicaSetController := metav1.GetControllerOf(&replicaSet)
+		if replicaSetController != nil && replicaSetController.Kind == "Deployment" && replicaSetController.UID == deployment.UID {
+			owned = append(owned, pod)
+		}
+	}
+	return owned, nil
 }
 
 func deploymentRolloutAvailable(deployment *appsv1.Deployment) bool {
@@ -504,7 +652,7 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 						{Name: configSourceName, MountPath: configSourcePath, ReadOnly: true},
 						{Name: configVolumeName, MountPath: configMountPath},
 					},
-				}},
+				}, modSyncInitContainer(gameServer, definition)},
 				Containers: []corev1.Container{{
 					Name:  factorio.GameID,
 					Image: definition.DefaultImage,
@@ -516,11 +664,11 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 					},
 					Lifecycle: lifecycle,
 				}},
-				Volumes: []corev1.Volume{
+				Volumes: append([]corev1.Volume{
 					{Name: dataVolumeName, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: gameServer.Name}}},
 					{Name: configSourceName, VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: runtimeConfigMapName(gameServer)}}}},
 					{Name: configVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-				},
+				}, modArtifactVolumes(gameServer)...),
 			},
 		}
 		return nil
@@ -539,6 +687,26 @@ func gracefulShutdownLifecycle(definition games.GameDefinition) (*corev1.Lifecyc
 	}, &timeout, nil
 }
 
+func modSyncInitContainer(gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition) corev1.Container {
+	command := "mkdir -p /factorio/mods && find /factorio/mods -maxdepth 1 -type f -name '*.zip' -delete"
+	mounts := []corev1.VolumeMount{{Name: dataVolumeName, MountPath: dataMountPath}}
+	if len(gameServer.Spec.SelectedSetup.Mods) == 1 {
+		mod := gameServer.Spec.SelectedSetup.Mods[0]
+		command += " && cp /plexus/mod/archive.zip /factorio/mods/" + mod.ArchiveFileName
+		mounts = append(mounts, corev1.VolumeMount{Name: modSourceName, MountPath: modSourcePath, ReadOnly: true})
+	}
+	return corev1.Container{Name: "factorio-mod-sync", Image: definition.DefaultImage, Command: []string{"/bin/sh", "-eu", "-c"}, Args: []string{command}, VolumeMounts: mounts}
+}
+
+func modArtifactVolumes(gameServer *plexusv1alpha1.GameServer) []corev1.Volume {
+	if len(gameServer.Spec.SelectedSetup.Mods) != 1 {
+		return nil
+	}
+	return []corev1.Volume{{Name: modSourceName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+		SecretName: gameServer.Spec.SelectedSetup.Mods[0].ArtifactRef,
+		Items:      []corev1.KeyToPath{{Key: factorio.ModArtifactDataKey, Path: factorio.ModArtifactDataKey}},
+	}}}}
+}
 func (r *GameServerReconciler) reconcileDelete(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(gameServer, GameServerFinalizer) {
 		return ctrl.Result{}, nil

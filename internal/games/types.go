@@ -98,7 +98,7 @@ var Registry = map[string]GameDefinition{
 		ID:                      factorio.GameID,
 		ManagementSchemaVersion: factorio.SchemaVersion,
 		DisplayName:             "Factorio",
-		DefaultImage:            "factoriotools/factorio:stable",
+		DefaultImage:            "factoriotools/factorio:" + factorio.SupportedRuntimeVersion,
 		MinDiskGiB:              10,
 		RecommendedDiskGiB:      50,
 		RawDiskPaths:            []string{"/saves", "/mods"},
