@@ -822,6 +822,89 @@ func TestRevisionScopedRuntimeNamesAreDeterministicDNSLabels(t *testing.T) {
 	}
 }
 
+func TestFactorioStoppedEditIsAcknowledgedAndNextStartRendersExactEnvelope(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerStopped)
+	gameServer.Generation = 1
+	gameServer.Spec.SelectedSetup.Configuration.Values.Raw = []byte(`{
+		"name":"Old Factory","description":"Must be cleared","tags":["old"],"maxPlayers":16
+	}`)
+	gameServer.Spec.SelectedSetup.Configuration.SecretRef.Name = "setup-1-secrets-r1"
+	oldSecret := testSetupSecret(t, gameServer)
+	reconciler, kubeClient := testReconcilerWithoutSecret(t, gameServer, oldSecret)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+
+	reconcileTwice(t, ctx, reconciler, request)
+	stopped := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if stopped.Status.Phase != plexusv1alpha1.GameServerPhaseStopped || stopped.Status.ObservedGeneration != 1 {
+		t.Fatalf("initial stopped configuration was not acknowledged: %#v", stopped.Status)
+	}
+
+	gameServer.Spec.SelectedSetup.Configuration.Values.Raw = []byte(`{
+		"name":"Acceptance Factory","maxPlayers":32,"autosave":{"intervalMinutes":7,"slots":6}
+	}`)
+	gameServer.Spec.SelectedSetup.Configuration.SecretRef.Name = "setup-1-secrets-r2"
+	gameServer.Generation = 2
+	replacementSecret := testSetupSecret(t, gameServer)
+	replacementSecret.Annotations[factorio.SecretRevisionAnnotation] = "2"
+	replacementSecretValues := factorio.Secrets{
+		Username:     testSecretValue("replacement-account"),
+		Token:        testSecretValue("replacement-token"),
+		GamePassword: testSecretValue("replacement-join"),
+		RCONPassword: testSecretValue("replacement-rcon"),
+	}
+	replacementSecret.Data[factorio.SecretDataKey] = marshalTestJSON(t, replacementSecretValues)
+	if err := kubeClient.Create(ctx, replacementSecret); err != nil {
+		t.Fatal(err)
+	}
+	stopped.Spec.SelectedSetup.Configuration = gameServer.Spec.SelectedSetup.Configuration
+	stopped.Generation = 2
+	if err := kubeClient.Update(ctx, stopped); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcileTwice(t, ctx, reconciler, request)
+	stopped = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if stopped.Status.Phase != plexusv1alpha1.GameServerPhaseStopped || stopped.Status.ObservedGeneration != 2 {
+		t.Fatalf("stopped edit was not acknowledged: %#v", stopped.Status)
+	}
+	if err := kubeClient.Get(ctx, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-config-g2"}, &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("stopped edit rendered runtime input before Start: %v", err)
+	}
+	if err := kubeClient.Get(ctx, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-runtime-g2-r2"}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("stopped edit rendered runtime Secret before Start: %v", err)
+	}
+
+	stopped.Spec.DesiredPower = plexusv1alpha1.DesiredPowerRunning
+	stopped.Generation = 3
+	if err := kubeClient.Update(ctx, stopped); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+
+	var configMap corev1.ConfigMap
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-config-g3"}, &configMap)
+	assertJSONEqual(t, configMap.Data[configFileName], `{
+		"name":"Acceptance Factory","max_players":32,"autosave_interval":7,"autosave_slots":6,
+		"description":"","tags":[],"visibility":{"public":true,"lan":true},
+		"require_user_verification":true,"allow_commands":"admins-only","afk_autokick_interval":0,
+		"auto_pause":true,"only_admins_can_pause_the_game":true,"autosave_only_on_server":true,
+		"non_blocking_saving":false
+	}`)
+	var runtimeSecret corev1.Secret
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-runtime-g3-r2"}, &runtimeSecret)
+	wantRuntimeSecretData := map[string][]byte{
+		"USERNAME": []byte(replacementSecretValues.Username), "TOKEN": []byte(replacementSecretValues.Token),
+		"GAME_PASSWORD": []byte(replacementSecretValues.GamePassword), "RCON_PASSWORD": []byte(replacementSecretValues.RCONPassword),
+	}
+	if !reflect.DeepEqual(runtimeSecret.Data, wantRuntimeSecretData) {
+		t.Fatalf("runtime Secret data did not use the replacement setup Secret: %#v", runtimeSecret.Data)
+	}
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	assertPodTemplateRuntimeInputs(t, &deployment.Spec.Template, "factorio-1-config-g3", "factorio-1-runtime-g3-r2")
+}
+
 func TestFactorioReconcileRendersCustomConfigurationAndSecretBackedEnvironment(t *testing.T) {
 	ctx := context.Background()
 	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
