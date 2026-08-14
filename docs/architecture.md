@@ -99,6 +99,14 @@ not advance `status.observedGeneration`, allowing the backend to retain the
 previous Secret safely. Stopped intent still removes the workload and public
 Service before validation so a bad Secret cannot prevent shutdown.
 
+The backend switches the complete selected-setup configuration envelope in one
+GameServer patch: schema version, structured non-sensitive values, and the
+selected Secret reference. The controller therefore observes and validates
+one coherent generation rather than acknowledging a partial settings/Secret
+combination. Configuration-only saves reuse the same Secret, while secret edits
+replace it. Saving remains stopped-only and never changes desired power; the next
+explicit Start renders that acknowledged envelope.
+
 The authoritative `v1alpha1` envelope is:
 
 ```yaml
