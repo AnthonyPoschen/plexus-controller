@@ -90,6 +90,12 @@ Exit criteria:
 
 ### Phase 3: Editor Pod Lifecycle (Managed Disk Operations)
 
+The narrow Factorio provider-ID tracer now installs one bounded, backend-
+validated immutable artifact during the next startup init sequence and reports
+its observed version. It intentionally does not provide native discovery,
+arbitrary uploads, customer filesystem access, general editor sessions, or
+large-artifact transfer; those remain in this and Phase 4.
+
 - Add support for on-demand editor pod creation when the main game server is stopped.
 - Editor pod mounts the same PVC(s) as the game server.
 - Lightweight process inside the editor pod for narrowly scoped save, backup,

@@ -97,6 +97,35 @@ type SelectedSetupSpec struct {
 	// Configuration contains structured, non-sensitive values and a reference
 	// to this setup's sensitive values.
 	Configuration GameConfiguration `json:"configuration"`
+
+	// Mods is the provider-validated enabled selection for the next runtime.
+	// The backend stages each immutable artifact; customers cannot provide an
+	// archive reference, URL, filename, or filesystem path directly.
+	// +kubebuilder:validation:MaxItems=1
+	Mods []ModSpec `json:"mods,omitempty"`
+}
+
+// ModSpec identifies one provider release and its backend-staged immutable
+// archive. All filesystem interpretation remains owned by the game adapter.
+type ModSpec struct {
+	ProviderID      string   `json:"providerID"`
+	ProviderModID   string   `json:"providerModID"`
+	Name            string   `json:"name"`
+	Version         string   `json:"version"`
+	GameVersion     string   `json:"gameVersion"`
+	Dependencies    []string `json:"dependencies"`
+	ArchiveFileName string   `json:"archiveFileName"`
+	ArchiveSHA256   string   `json:"archiveSHA256"`
+	ArtifactRef     string   `json:"artifactRef"`
+}
+
+// InstalledMod reports a release observed only after its install init
+// container completed and the matching game workload became available.
+type InstalledMod struct {
+	ProviderID    string `json:"providerID"`
+	ProviderModID string `json:"providerModID"`
+	Name          string `json:"name"`
+	Version       string `json:"version"`
 }
 
 // GameConfiguration is the stable envelope around adapter-specific structured
@@ -148,6 +177,17 @@ type GameServerStatus struct {
 	// available workload. It never contains Secret material.
 	// +kubebuilder:validation:Minimum=0
 	ObservedSecretRevision int64 `json:"observedSecretRevision,omitempty"`
+
+	// InstalledMods is runtime observation, never inferred by the backend from
+	// the desired enabled selection. InstalledModsGeneration identifies the
+	// configuration generation whose available workload produced the list.
+	// +listType=map
+	// +listMapKey=providerID
+	// +listMapKey=providerModID
+	InstalledMods []InstalledMod `json:"installedMods,omitempty"`
+
+	// +kubebuilder:validation:Minimum=0
+	InstalledModsGeneration int64 `json:"installedModsGeneration,omitempty"`
 
 	// Endpoint is the public address players can connect to when available.
 	Endpoint string `json:"endpoint,omitempty"`

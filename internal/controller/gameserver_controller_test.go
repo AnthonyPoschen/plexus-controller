@@ -1,8 +1,13 @@
 package controller
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"reflect"
 	"strings"
@@ -53,7 +58,7 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	var deployment appsv1.Deployment
 	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
 	assertOwnedAndLabeled(t, gameServer, &deployment)
-	if deployment.Spec.Template.Spec.Containers[0].Image != "factoriotools/factorio:stable" {
+	if deployment.Spec.Template.Spec.Containers[0].Image != "factoriotools/factorio:"+factorio.SupportedRuntimeVersion {
 		t.Fatalf("Factorio image = %q", deployment.Spec.Template.Spec.Containers[0].Image)
 	}
 	if got := deployment.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath; got != "/factorio" {
@@ -97,7 +102,7 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	if got := deployment.Spec.Template.Spec.Containers[0].VolumeMounts[1]; got.Name != "factorio-config" || got.MountPath != "/factorio/config" || got.SubPath != "" || got.ReadOnly {
 		t.Fatalf("Factorio configuration mount = %#v", got)
 	}
-	if len(deployment.Spec.Template.Spec.InitContainers) != 1 {
+	if len(deployment.Spec.Template.Spec.InitContainers) != 2 {
 		t.Fatalf("Factorio configuration init containers = %#v", deployment.Spec.Template.Spec.InitContainers)
 	}
 	configInit := deployment.Spec.Template.Spec.InitContainers[0]
@@ -107,6 +112,10 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	}
 	if len(configInit.VolumeMounts) != 2 || configInit.VolumeMounts[0].Name != "factorio-config-source" || !configInit.VolumeMounts[0].ReadOnly || configInit.VolumeMounts[1].Name != "factorio-config" {
 		t.Fatalf("Factorio configuration init mounts = %#v", configInit.VolumeMounts)
+	}
+	modInit := deployment.Spec.Template.Spec.InitContainers[1]
+	if modInit.Name != "factorio-mod-sync" || len(modInit.VolumeMounts) != 1 || modInit.VolumeMounts[0].Name != dataVolumeName {
+		t.Fatalf("Factorio mod sync init container = %#v", modInit)
 	}
 
 	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
@@ -197,6 +206,143 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	}
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-config-g1"}, &configMap)
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-runtime-g1-r1"}, &corev1.Secret{})
+}
+
+func TestFactorioModArtifactIsInstalledAndReportedOnlyAfterAvailability(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	archive := testFactorioModArchive(t)
+	digest := sha256.Sum256(archive)
+	sha := hex.EncodeToString(digest[:])
+	gameServer.Spec.SelectedSetup.Mods = []plexusv1alpha1.ModSpec{{ProviderID: factorio.ModProviderID, ProviderModID: "tiny-mod", Name: "tiny-mod", Version: "1.2.3", GameVersion: factorio.SupportedFactorioVersion, Dependencies: []string{"base >= 2.0"}, ArchiveFileName: "tiny-mod_1.2.3.zip", ArchiveSHA256: sha, ArtifactRef: "setup-1-mod"}}
+	artifact := testModArtifactSecret(gameServer, archive, sha)
+	reconciler, kubeClient := testReconciler(t, gameServer, artifact)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	modInit := deployment.Spec.Template.Spec.InitContainers[1]
+	if !strings.Contains(modInit.Args[0], "/factorio/mods/tiny-mod_1.2.3.zip") || len(modInit.VolumeMounts) != 2 {
+		t.Fatalf("managed mod install init = %#v", modInit)
+	}
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if len(current.Status.InstalledMods) != 0 {
+		t.Fatalf("pending workload reported installed mods: %#v", current.Status.InstalledMods)
+	}
+
+	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas, deployment.Status.UpdatedReplicas, deployment.Status.AvailableReplicas = 1, 1, 1
+	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if len(current.Status.InstalledMods) != 1 || current.Status.InstalledMods[0].Version != "1.2.3" || current.Status.InstalledModsGeneration != current.Generation {
+		t.Fatalf("available workload installed mods = %#v", current.Status.InstalledMods)
+	}
+}
+
+func TestFactorioModRemovalClearsArchiveAndObservationOnlyAfterAvailability(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	gameServer.Generation = 2
+	gameServer.Status.InstalledMods = []plexusv1alpha1.InstalledMod{{ProviderID: factorio.ModProviderID, ProviderModID: "tiny-mod", Name: "tiny-mod", Version: "1.2.3"}}
+	gameServer.Status.InstalledModsGeneration = 1
+	reconciler, kubeClient := testReconciler(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	modInit := deployment.Spec.Template.Spec.InitContainers[1]
+	if !strings.Contains(modInit.Args[0], "find /factorio/mods -maxdepth 1 -type f -name '*.zip' -delete") || strings.Contains(modInit.Args[0], "cp /plexus/mod/") || len(modInit.VolumeMounts) != 1 {
+		t.Fatalf("managed mod removal init = %#v", modInit)
+	}
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if len(current.Status.InstalledMods) != 1 || current.Status.InstalledModsGeneration != 1 {
+		t.Fatalf("pending removal discarded installed observation: %#v", current.Status)
+	}
+
+	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas, deployment.Status.UpdatedReplicas, deployment.Status.AvailableReplicas = 1, 1, 1
+	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if len(current.Status.InstalledMods) != 0 || current.Status.InstalledModsGeneration != 2 {
+		t.Fatalf("available mod-free workload observation = %#v", current.Status)
+	}
+}
+
+func TestFactorioWorkloadFailuresPreserveFailureTruth(t *testing.T) {
+	for _, test := range []struct {
+		name, reason string
+		withMod      bool
+		status       corev1.PodStatus
+	}{
+		{name: "mod init termination", reason: "ModInstallFailed", withMod: true, status: corev1.PodStatus{InitContainerStatuses: []corev1.ContainerStatus{{Name: "factorio-mod-sync", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Message: "provider-secret-token"}}}}}},
+		{name: "image pull", reason: "WorkloadImagePullFailed", status: corev1.PodStatus{InitContainerStatuses: []corev1.ContainerStatus{{Name: "factorio-config-init", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff", Message: "registry-secret"}}}}}},
+		{name: "scheduling", reason: "WorkloadSchedulingFailed", status: corev1.PodStatus{Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: corev1.PodReasonUnschedulable, Message: "private-node-details"}}}},
+		{name: "zero mods ordinary rollout", reason: "WorkloadRolloutFailed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+			objects := []client.Object{gameServer}
+			if test.withMod {
+				archive := testFactorioModArchive(t)
+				digest := sha256.Sum256(archive)
+				sha := hex.EncodeToString(digest[:])
+				gameServer.Spec.SelectedSetup.Mods = []plexusv1alpha1.ModSpec{{ProviderID: factorio.ModProviderID, ProviderModID: "tiny-mod", Name: "tiny-mod", Version: "1.2.3", GameVersion: factorio.SupportedFactorioVersion, Dependencies: []string{"base >= 2.0"}, ArchiveFileName: "tiny-mod_1.2.3.zip", ArchiveSHA256: sha, ArtifactRef: "setup-1-mod"}}
+				objects = append(objects, testModArtifactSecret(gameServer, archive, sha))
+			}
+			reconciler, kubeClient := testReconciler(t, objects...)
+			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+			reconcileTwice(t, ctx, reconciler, request)
+			var deployment appsv1.Deployment
+			get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+			if test.name == "zero mods ordinary rollout" {
+				deployment.Status.Conditions = []appsv1.DeploymentCondition{{Type: appsv1.DeploymentReplicaFailure, Status: corev1.ConditionTrue, Reason: "FailedCreate", Message: "provider-secret-token"}}
+				if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				createOwnedWorkloadPod(t, ctx, kubeClient, gameServer, &deployment, test.status)
+			}
+			reconcileOnce(t, ctx, reconciler, request)
+			current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+			if current.Status.Phase != plexusv1alpha1.GameServerPhaseFailed || conditionReason(current, conditionReady) != test.reason {
+				t.Fatalf("failure status = %#v", current.Status)
+			}
+			if strings.Contains(current.Status.Message, "secret") || strings.Contains(current.Status.Message, "private-node") {
+				t.Fatalf("failure leaked sensitive detail: %q", current.Status.Message)
+			}
+		})
+	}
+}
+
+func TestInstalledModsStayScopedToAvailableConfigurationGeneration(t *testing.T) {
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	gameServer.Generation = 2
+	gameServer.Spec.SelectedSetup.Mods = []plexusv1alpha1.ModSpec{{ProviderID: factorio.ModProviderID, ProviderModID: "tiny-mod", Name: "tiny-mod", Version: "1.2.4"}}
+	previous := plexusv1alpha1.GameServerStatus{ActiveSetupID: "setup-1", ObservedConfigurationGeneration: 1, InstalledModsGeneration: 1, InstalledMods: []plexusv1alpha1.InstalledMod{{ProviderID: factorio.ModProviderID, ProviderModID: "tiny-mod", Name: "tiny-mod", Version: "1.2.3"}}}
+	pending := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStarting, "pending")
+	preserveActiveRevision(&pending, previous)
+	if pending.ObservedGeneration != 2 || pending.InstalledModsGeneration != 1 || pending.InstalledMods[0].Version != "1.2.3" {
+		t.Fatalf("pending generation scope = %#v", pending)
+	}
+	failed := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseFailed, "failed")
+	preserveActiveRevision(&failed, pending)
+	if failed.InstalledModsGeneration != 1 || failed.InstalledMods[0].Version != "1.2.3" {
+		t.Fatalf("failed generation scope = %#v", failed)
+	}
+	success := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseRunning, "running")
+	acknowledgeInstalledMods(&success, gameServer)
+	if success.InstalledModsGeneration != 2 || success.InstalledMods[0].Version != "1.2.4" {
+		t.Fatalf("success generation scope = %#v", success)
+	}
 }
 
 func TestFactorioStopUsesCurrentShutdownMode(t *testing.T) {
@@ -380,7 +526,6 @@ func podDeleteInterceptor(gracePeriods *[]*int64) interceptor.Funcs {
 		},
 	}
 }
-
 func TestFactorioUnloadedServerRetainsRevisionInputsUntilDeletion(t *testing.T) {
 	ctx := context.Background()
 	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
@@ -1198,6 +1343,20 @@ func testReconcilerWithoutSecretWithInterceptors(t *testing.T, interceptors inte
 	return &GameServerReconciler{Client: kubeClient, Scheme: scheme}, kubeClient
 }
 
+func createOwnedWorkloadPod(t *testing.T, ctx context.Context, kubeClient client.Client, gameServer *plexusv1alpha1.GameServer, deployment *appsv1.Deployment, status corev1.PodStatus) {
+	t.Helper()
+	controlled := true
+	replicaSet := &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: deployment.Name + "-rs", Namespace: deployment.Namespace, UID: "replicaset-uid", OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "Deployment", Name: deployment.Name, UID: deployment.UID, Controller: &controlled}}}}
+	if err := kubeClient.Create(ctx, replicaSet); err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: deployment.Name + "-pod", Namespace: deployment.Namespace, Labels: selectorLabels(gameServer), OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: replicaSet.Name, UID: replicaSet.UID, Controller: &controlled}}}, Status: status}
+	pod.Annotations = map[string]string{"plexus.gg/configuration-generation": fmt.Sprint(gameServer.Generation)}
+	if err := kubeClient.Create(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func testSetupSecret(t *testing.T, gameServer *plexusv1alpha1.GameServer) *corev1.Secret {
 	t.Helper()
 	immutable := true
@@ -1216,6 +1375,34 @@ func testSetupSecret(t *testing.T, gameServer *plexusv1alpha1.GameServer) *corev
 			RCONPassword: testSecretValue("rcon"),
 		})},
 	}
+}
+
+func testFactorioModArchive(t *testing.T) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	entry, err := writer.Create("tiny-mod_1.2.3/info.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte(`{"name":"tiny-mod","version":"1.2.3","factorio_version":"2.0","dependencies":["base >= 2.0"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
+}
+
+func testModArtifactSecret(gameServer *plexusv1alpha1.GameServer, archive []byte, sha string) *corev1.Secret {
+	immutable := true
+	controller := true
+	blockOwnerDeletion := true
+	return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "setup-1-mod", Namespace: gameServer.Namespace,
+		Labels:          map[string]string{plexusv1alpha1.LabelServerID: gameServer.Spec.ServerID, plexusv1alpha1.LabelOwnerUserID: gameServer.Spec.OwnerUserID, plexusv1alpha1.LabelGameID: factorio.GameID, plexusv1alpha1.LabelSetupID: gameServer.Spec.SelectedSetup.ID},
+		Annotations:     map[string]string{factorio.ModProviderAnnotation: factorio.ModProviderID, factorio.ModIDAnnotation: "tiny-mod", factorio.ModVersionAnnotation: "1.2.3", factorio.ModSHA256Annotation: sha},
+		OwnerReferences: []metav1.OwnerReference{{APIVersion: plexusv1alpha1.GroupVersion.String(), Kind: "GameServer", Name: gameServer.Name, UID: gameServer.UID, Controller: &controller, BlockOwnerDeletion: &blockOwnerDeletion}}},
+		Immutable: &immutable, Type: corev1.SecretTypeOpaque, Data: map[string][]byte{factorio.ModArtifactDataKey: archive}}
 }
 
 func marshalTestJSON(t *testing.T, value any) []byte {

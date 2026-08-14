@@ -139,6 +139,49 @@ spec:
                       saved setup.
                     minLength: 1
                     type: string
+                  mods:
+                    description: |-
+                      Mods is the provider-validated enabled selection for the next runtime.
+                      The backend stages each immutable artifact; customers cannot provide an
+                      archive reference, URL, filename, or filesystem path directly.
+                    items:
+                      description: |-
+                        ModSpec identifies one provider release and its backend-staged immutable
+                        archive. All filesystem interpretation remains owned by the game adapter.
+                      properties:
+                        archiveFileName:
+                          type: string
+                        archiveSHA256:
+                          type: string
+                        artifactRef:
+                          type: string
+                        dependencies:
+                          items:
+                            type: string
+                          type: array
+                        gameVersion:
+                          type: string
+                        name:
+                          type: string
+                        providerID:
+                          type: string
+                        providerModID:
+                          type: string
+                        version:
+                          type: string
+                      required:
+                      - archiveFileName
+                      - archiveSHA256
+                      - artifactRef
+                      - dependencies
+                      - gameVersion
+                      - name
+                      - providerID
+                      - providerModID
+                      - version
+                      type: object
+                    maxItems: 1
+                    type: array
                 required:
                 - configuration
                 - gameID
@@ -237,6 +280,39 @@ spec:
                 description: Endpoint is the public address players can connect to
                   when available.
                 type: string
+              installedMods:
+                description: |-
+                  InstalledMods is runtime observation, never inferred by the backend from
+                  the desired enabled selection. InstalledModsGeneration identifies the
+                  configuration generation whose available workload produced the list.
+                items:
+                  description: |-
+                    InstalledMod reports a release observed only after its install init
+                    container completed and the matching game workload became available.
+                  properties:
+                    name:
+                      type: string
+                    providerID:
+                      type: string
+                    providerModID:
+                      type: string
+                    version:
+                      type: string
+                  required:
+                  - name
+                  - providerID
+                  - providerModID
+                  - version
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - providerID
+                - providerModID
+                x-kubernetes-list-type: map
+              installedModsGeneration:
+                format: int64
+                minimum: 0
+                type: integer
               lastObservedAt:
                 description: LastObservedAt is when this status was last refreshed
                   from runtime state.

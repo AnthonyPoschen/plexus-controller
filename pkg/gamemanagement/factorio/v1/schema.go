@@ -57,7 +57,7 @@ func Schema() model.ManagementSchema {
 		},
 		Capabilities: []model.Capability{
 			{ID: "configuration", Released: false, Description: "Tailored server settings backed by the typed Factorio configuration."},
-			{ID: "mods", Released: false, Description: "Provider-backed Factorio mod management."},
+			{ID: "mods", Released: true, Description: "Provider-backed Factorio mod management."},
 			{ID: "saves", Released: true, Description: "Validated save export; import remains unavailable."},
 			{ID: "console", Released: false, Description: "Interactive Factorio administration over RCON."},
 			{ID: "logs", Released: true, Description: "Read-only live container and Factorio log output."},
@@ -77,7 +77,7 @@ func Schema() model.ManagementSchema {
 		},
 		Mods: model.ModProviderPolicy{
 			ProviderID: "factorio-mod-portal", ProviderName: "Factorio Mod Portal", ProviderURL: "https://mods.factorio.com",
-			Released: false, NativeDiscovery: true, DirectReference: true, DependencyResolution: "provider-metadata",
+			Released: true, NativeDiscovery: false, DirectReference: true, DependencyResolution: "provider-metadata",
 			VersionSelection: "latest-compatible", Compatibility: "factorio-version", ApplyPolicy: "next-start",
 			RequiresStopped: true, AutomaticRestart: false, ClientSynchronization: "join-time",
 		},

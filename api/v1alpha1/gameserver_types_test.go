@@ -93,8 +93,8 @@ func TestGeneratedCRDMatchesGameServerContract(t *testing.T) {
 	}
 
 	selectedSetup := spec.Properties["selectedSetup"]
-	if got := sortedPropertyNames(selectedSetup.Properties); !reflect.DeepEqual(got, []string{"configuration", "gameID", "id"}) {
-		t.Fatalf("selected setup fields = %v, want only identity and configuration", got)
+	if got := sortedPropertyNames(selectedSetup.Properties); !reflect.DeepEqual(got, []string{"configuration", "gameID", "id", "mods"}) {
+		t.Fatalf("selected setup fields = %v, want identity, configuration, and managed mods", got)
 	}
 	configuration := selectedSetup.Properties["configuration"]
 	if got := sortedPropertyNames(configuration.Properties); !reflect.DeepEqual(got, []string{"schemaVersion", "secretRef", "values"}) {
@@ -110,7 +110,7 @@ func TestGeneratedCRDMatchesGameServerContract(t *testing.T) {
 	}
 
 	status := root.Properties["status"]
-	wantStatusFields := []string{"activeSetupID", "conditions", "endpoint", "lastObservedAt", "message", "observedConfigurationGeneration", "observedGeneration", "observedRestartGeneration", "observedSecretRevision", "phase", "players"}
+	wantStatusFields := []string{"activeSetupID", "conditions", "endpoint", "installedMods", "installedModsGeneration", "lastObservedAt", "message", "observedConfigurationGeneration", "observedGeneration", "observedRestartGeneration", "observedSecretRevision", "phase", "players"}
 	if got := sortedPropertyNames(status.Properties); !reflect.DeepEqual(got, wantStatusFields) {
 		t.Fatalf("status fields = %v, want %v", got, wantStatusFields)
 	}

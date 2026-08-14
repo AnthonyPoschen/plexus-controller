@@ -40,7 +40,9 @@ an unloaded Server is valid only with `spec.desiredPower: Stopped`.
   - The backend exposes only the narrowly scoped operation authorized for that
     game workflow; customers never receive a general filesystem browser or
     arbitrary PVC path access.
-  - All managed mutations go through the editor pod while the game pod is down.
+- Managed mutations run only while the game process is down. General managed
+  disk operations use an editor pod; the bounded Factorio provider-ID tracer
+  uses a startup init container before the game container begins.
   - On session end the controller tears down the editor pod.
 - This prevents live filesystem races, open file handle problems, and accidental corruption.
 
@@ -254,6 +256,27 @@ controller golden serialization test and use a new versioned package for
 incompatible changes. The backend pins a released controller module and keeps
 an independent response checksum so dependency upgrades require deliberate
 review in both repositories.
+
+Factorio's first released mod path is deliberately limited to one backend-
+resolved Mod Portal release. The selected setup carries an immutable artifact
+Secret reference plus validated provider identity, version, compatibility,
+dependencies, filename, and SHA-256. The controller accepts no customer path,
+URL, or bytes through this contract. It revalidates the owned Secret and ZIP
+layout, then a startup init container replaces only `/factorio/mods/*.zip` on
+the retained PVC before the game process starts. Recreate rollout ordering
+ensures the previous game pod is gone before this mutation runs.
+
+`status.installedMods` is populated only after the install init container has
+completed and the matching Deployment is available. Its explicit generation
+remains scoped to that available configuration while a replacement is pending
+or failed. The controller inspects matching owned Pod/init status: only an
+actual mod-sync termination becomes `ModInstallFailed`, while scheduling,
+image-pull, initialization, and ordinary rollout failures retain their own
+truth without exposing container details. The runtime image is pinned to the
+adapter's supported Factorio 2.0 patch release. Desired selection alone never
+becomes an installed observation. Bounded Secret staging supports this thin
+tracer only. Larger artifacts remain assigned to the future object-storage and
+managed editor/job path.
 
 Save-policy `requiredEntries` values are required basenames, not fixed archive
 paths. Factorio save imports normally place those files beneath one safe,
