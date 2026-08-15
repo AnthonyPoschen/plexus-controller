@@ -97,7 +97,10 @@ Exit criteria:
 ### Phase 3: Editor Pod Lifecycle (Managed Disk Operations)
 
 The Factorio provider-ID tracer installs bounded, backend-validated immutable
-artifacts during the next startup init sequence and reports observed versions.
+artifacts with one managed disk Job while the Server is stopped, or while Start
+waits for that Job. Observed versions are reported after the Job exits. The
+supervisor pod is not scheduled until installed mods match and the Job has
+released the PVC. Stop does not cancel the Job.
 Native Mod Portal discovery is released for Factorio. It intentionally does not
 provide arbitrary uploads, customer filesystem access, general editor sessions,
 or large-artifact transfer; those remain in this and Phase 4.

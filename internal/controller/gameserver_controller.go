@@ -16,6 +16,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -24,6 +25,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	plexusv1alpha1 "github.com/AnthonyPoschen/plexus-controller/api/v1alpha1"
 	"github.com/AnthonyPoschen/plexus-controller/internal/games"
@@ -41,6 +43,7 @@ const (
 	conditionStorage           = "StorageReady"
 	conditionEndpoint          = "EndpointReady"
 	conditionMods              = "ModsReady"
+	conditionDiskJob           = "DiskJob"
 	conditionShutdown          = "ShutdownProgress"
 	takingLongerThanExpected   = "Taking longer than expected"
 	dataVolumeName             = "game-data"
@@ -65,6 +68,8 @@ type GameServerReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=plexus.gg,resources=saveimports;saveexports,verbs=get;list;watch
 
 func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
 	var gameServer plexusv1alpha1.GameServer
@@ -134,6 +139,20 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 
 	if _, err := r.ensurePVC(ctx, &gameServer, definition); err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, &gameServer, "StorageReconcileFailed", err)
+	}
+
+	disk, err := r.reconcileManagedDisk(ctx, &gameServer, definition)
+	if err != nil {
+		return ctrl.Result{}, r.reportFailure(ctx, &gameServer, "DiskJobReconcileFailed", err)
+	}
+	if disk.failed {
+		return r.reportDiskJobFailure(ctx, &gameServer, definition, disk)
+	}
+	if disk.blocked {
+		if gameServer.Spec.DesiredPower == plexusv1alpha1.DesiredPowerRunning {
+			return r.reportStartingForDiskWork(ctx, &gameServer, definition, disk)
+		}
+		return r.reconcileStopped(ctx, &gameServer, definition)
 	}
 
 	if gameServer.Spec.DesiredPower == plexusv1alpha1.DesiredPowerStopped {
@@ -296,6 +315,9 @@ func (r *GameServerReconciler) SetupWithManager(manager ctrl.Manager) error {
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Secret{}).
+		Owns(&batchv1.Job{}).
+		Watches(&plexusv1alpha1.SaveImport{}, handler.EnqueueRequestsFromMapFunc(mapServerOwnedRequest)).
+		Watches(&plexusv1alpha1.SaveExport{}, handler.EnqueueRequestsFromMapFunc(mapServerOwnedRequest)).
 		Complete(r)
 }
 
@@ -320,7 +342,7 @@ func (r *GameServerReconciler) reconcileRunning(ctx context.Context, gameServer 
 		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseFailed, failure.message)
 		preserveActiveRevision(&status, gameServer.Status)
 		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, failure.reason, status.Message)
-		if failure.reason == "ModInstallFailed" {
+		if failure.reason == "ModInstallFailed" || failure.reason == "SaveImportFailed" {
 			setCondition(&status, gameServer.Generation, conditionMods, metav1.ConditionFalse, failure.reason, status.Message)
 		}
 		return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
@@ -382,6 +404,34 @@ func acknowledgeInstalledMods(status *plexusv1alpha1.GameServerStatus, gameServe
 	status.InstalledModsGeneration = gameServer.Generation
 }
 
+func preserveInstalledMods(status *plexusv1alpha1.GameServerStatus, previous plexusv1alpha1.GameServerStatus) {
+	status.InstalledMods = append([]plexusv1alpha1.InstalledMod(nil), previous.InstalledMods...)
+	status.InstalledModsGeneration = previous.InstalledModsGeneration
+}
+
+func (r *GameServerReconciler) reportStartingForDiskWork(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition, disk diskReconcile) (ctrl.Result, error) {
+	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStarting, disk.message)
+	preserveInstalledMods(&status, gameServer.Status)
+	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, disk.reason, disk.message)
+	setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is ready")
+	setCondition(&status, gameServer.Generation, conditionDiskJob, metav1.ConditionFalse, disk.reason, disk.message)
+	if managesMods(definition) {
+		setCondition(&status, gameServer.Generation, conditionMods, metav1.ConditionFalse, disk.reason, disk.message)
+	}
+	return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
+}
+
+func (r *GameServerReconciler) reportDiskJobFailure(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition, disk diskReconcile) (ctrl.Result, error) {
+	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseFailed, disk.message)
+	preserveInstalledMods(&status, gameServer.Status)
+	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, disk.reason, disk.message)
+	setCondition(&status, gameServer.Generation, conditionDiskJob, metav1.ConditionFalse, disk.reason, disk.message)
+	if managesMods(definition) || disk.reason == "ModInstallFailed" {
+		setCondition(&status, gameServer.Generation, conditionMods, metav1.ConditionFalse, disk.reason, disk.message)
+	}
+	return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
+}
+
 func observedInstalledMods(mods []plexusv1alpha1.ModSpec) []plexusv1alpha1.InstalledMod {
 	installed := make([]plexusv1alpha1.InstalledMod, 0, len(mods))
 	for _, mod := range mods {
@@ -409,9 +459,6 @@ func (r *GameServerReconciler) workloadFailure(ctx context.Context, gameServer *
 			}
 			if status.State.Terminated == nil || status.State.Terminated.ExitCode == 0 {
 				continue
-			}
-			if status.Name == "factorio-mod-sync" && len(gameServer.Spec.SelectedSetup.Mods) != 0 {
-				return &observedWorkloadFailure{reason: "ModInstallFailed", message: definition.DisplayName + " mod synchronization failed before workload startup"}, nil
 			}
 			return &observedWorkloadFailure{reason: "WorkloadInitializationFailed", message: definition.DisplayName + " workload initialization failed"}, nil
 		}
@@ -550,6 +597,7 @@ func (r *GameServerReconciler) reconcileStopped(ctx context.Context, gameServer 
 	}
 	if deleted || serviceDeleted {
 		status := r.stoppingStatus(ctx, gameServer, fmt.Sprintf("Stopping the %s workload; persistent storage is retained", definition.DisplayName))
+		preserveInstalledMods(&status, gameServer.Status)
 		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "WorkloadStopping", definition.DisplayName+" workload is being removed")
 		setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is retained")
 		setCondition(&status, gameServer.Generation, conditionEndpoint, metav1.ConditionFalse, "ServiceStopping", "Public endpoint is being removed")
@@ -560,6 +608,7 @@ func (r *GameServerReconciler) reconcileStopped(ctx context.Context, gameServer 
 	}
 
 	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStopped, definition.DisplayName+" workload is stopped; persistent storage is retained")
+	preserveInstalledMods(&status, gameServer.Status)
 	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "DesiredStopped", "No "+definition.DisplayName+" workload is running")
 	setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is retained")
 	setCondition(&status, gameServer.Generation, conditionEndpoint, metav1.ConditionFalse, "DesiredStopped", "A stopped server has no public endpoint")
@@ -679,9 +728,6 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 		Args:         []string{workload.Config.InitCopyCommand},
 		VolumeMounts: initMounts,
 	}}
-	if workload.SupportsMods {
-		initContainers = append(initContainers, modSyncInitContainer(gameServer, definition))
-	}
 	volumeMounts := []corev1.VolumeMount{
 		{Name: dataVolumeName, MountPath: workload.DataMountPath},
 	}
@@ -726,7 +772,7 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 					VolumeMounts: volumeMounts,
 					Lifecycle:    lifecycle,
 				}},
-				Volumes: append(workloadVolumes(gameServer, definition), modArtifactVolumes(gameServer, definition)...),
+				Volumes: workloadVolumes(gameServer, definition),
 			},
 		}
 		return nil
@@ -758,17 +804,6 @@ func gracefulShutdownLifecycle(definition games.GameDefinition) (*corev1.Lifecyc
 	}
 }
 
-func modSyncInitContainer(gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition) corev1.Container {
-	command := "mkdir -p /factorio/mods && find /factorio/mods -maxdepth 1 -type f -name '*.zip' -delete"
-	mounts := []corev1.VolumeMount{{Name: dataVolumeName, MountPath: definition.Workload.DataMountPath}}
-	if len(gameServer.Spec.SelectedSetup.Mods) == 1 {
-		mod := gameServer.Spec.SelectedSetup.Mods[0]
-		command += " && cp /plexus/mod/archive.zip /factorio/mods/" + mod.ArchiveFileName
-		mounts = append(mounts, corev1.VolumeMount{Name: modSourceName, MountPath: modSourcePath, ReadOnly: true})
-	}
-	return corev1.Container{Name: "factorio-mod-sync", Image: definition.DefaultImage, Command: []string{"/bin/sh", "-eu", "-c"}, Args: []string{command}, VolumeMounts: mounts}
-}
-
 func workloadVolumes(gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition) []corev1.Volume {
 	volumes := []corev1.Volume{
 		{Name: dataVolumeName, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: gameServer.Name}}},
@@ -798,6 +833,7 @@ func (r *GameServerReconciler) reconcileDelete(ctx context.Context, gameServer *
 	for _, object := range []client.Object{
 		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: gameServer.Name, Namespace: gameServer.Namespace}},
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: gameServer.Name, Namespace: gameServer.Namespace}},
+		&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: diskJobName(gameServer), Namespace: gameServer.Namespace}},
 		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: gameServer.Name, Namespace: gameServer.Namespace}},
 	} {
 		exists, err := r.deleteOwnedObject(ctx, gameServer, object)

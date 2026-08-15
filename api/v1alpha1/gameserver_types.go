@@ -123,8 +123,8 @@ type ModSpec struct {
 	ArtifactRef     string   `json:"artifactRef"`
 }
 
-// InstalledMod reports a release observed only after its install init
-// container completed and the matching game workload became available.
+// InstalledMod reports a release observed after the managed disk job
+// installed it on the retained PVC.
 type InstalledMod struct {
 	ProviderID    string `json:"providerID"`
 	ProviderModID string `json:"providerModID"`

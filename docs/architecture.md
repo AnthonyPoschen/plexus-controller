@@ -48,13 +48,18 @@ an unloaded Server is valid only with `spec.desiredPower: Stopped`.
     game workflow; customers never receive a general filesystem browser or
     arbitrary PVC path access.
 - Managed mutations run only while the game process is down. General managed
-  disk operations use an editor pod; the bounded Factorio provider-ID tracer
-  uses a startup init container before the game container begins.
-- Factorio applies the backend-staged enabled selection at startup through that
-  init container and reports the observed installed version only after the
-  matching generation becomes available. Detected provider updates never
-  increment restart generation or otherwise restart a GameServer; the adapter
-  policy is next-start with join-time client synchronization. Factorio also
+  disk operations use an editor pod; Factorio provider-ID installs use one
+  short-lived GameServer-owned Job that mounts the PVC and exits.
+- Factorio applies the backend-staged enabled selection through that Job while
+  the Server is stopped, or while Start is waiting. Observed installed versions
+  are reported after the Job succeeds and releases the PVC. The game supervisor
+  pod is not created until installed mod state matches the enabled selection.
+  Start records desired power Running and customer status stays Starting with a
+  detail that names the pending work. Stop sets desired power Stopped
+  immediately and does not cancel the Job. Job failure reports Failed and still
+  creates no game pod. Detected provider updates never increment restart
+  generation or otherwise restart a GameServer; the adapter policy is next-start
+  with join-time client synchronization. Factorio also
   declares a chat broadcast channel so the backend can preview and send a
   safe, attributed maintenance notice over RCON without changing desired
   power.
@@ -300,15 +305,15 @@ resolved Mod Portal release. The selected setup carries an immutable artifact
 Secret reference plus validated provider identity, version, compatibility,
 dependencies, filename, and SHA-256. The controller accepts no customer path,
 URL, or bytes through this contract. It revalidates the owned Secret and ZIP
-layout, then a startup init container replaces only `/factorio/mods/*.zip` on
-the retained PVC before the game process starts. Recreate rollout ordering
-ensures the previous game pod is gone before this mutation runs.
+layout, then one managed disk Job replaces only `/factorio/mods/*.zip` on
+the retained PVC. The supervisor image never applies that mutation. Recreate
+rollout ordering still ensures the previous game pod is gone before a
+replacement writer mounts the volume.
 
-`status.installedMods` is populated only after the install init container has
-completed and the matching Deployment is available. Its explicit generation
-remains scoped to that available configuration while a replacement is pending
-or failed. The controller inspects matching owned Pod/init status: only an
-actual mod-sync termination becomes `ModInstallFailed`, while scheduling,
+`status.installedMods` is populated after the Job succeeds, including while the
+Server remains Stopped. Its explicit generation remains scoped to the
+configuration the Job applied while a replacement is pending or failed. A failed
+Job becomes `ModInstallFailed` without creating a game pod. Scheduling,
 image-pull, initialization, and ordinary rollout failures retain their own
 truth without exposing container details. The runtime image is the
 Plexus-owned Factorio supervisor image, pinned to the adapter's supported
