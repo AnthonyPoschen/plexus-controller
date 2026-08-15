@@ -37,6 +37,13 @@ Key backend documents to read:
 - When adding support for a new game or new runtime feature, update (or help update) the corresponding `GameRuntimeProfile` definition and the backend catalog where appropriate.
 - Prefer clear separation: one game profile change should not require backend API changes.
 
+### Vendored Dependencies
+
+- Keep module sources in `vendor/` and run tests and builds with `-mod=vendor`.
+- After `go get` or `go mod tidy`, run `go mod vendor` and commit the result.
+- Never edit files under `vendor/` directly.
+- Never commit `replace example.com/mod => ../mod` or any other local path replace.
+
 ## Documentation
 
 Keep `docs/architecture.md` and `docs/roadmap.md` up to date. They are the primary way other agents and humans understand the split between the two repos.

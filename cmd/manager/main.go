@@ -2,23 +2,30 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"net/http"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	plexusv1alpha1 "github.com/AnthonyPoschen/plexus-controller/api/v1alpha1"
 	"github.com/AnthonyPoschen/plexus-controller/internal/controller"
+	"github.com/AnthonyPoschen/plexus-controller/pkg/runtimeapi"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -29,7 +36,7 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(plexusv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -50,14 +57,18 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
+	contract, err := runtimeapi.Load()
+	if err != nil {
+		setupLog.Error(err, "invalid runtime API contract")
+		os.Exit(1)
+	}
+	if err := plexusv1alpha1.AddGroupToScheme(contract.Group)(scheme); err != nil {
+		setupLog.Error(err, "unable to register runtime API group")
+		os.Exit(1)
+	}
+
 	config := ctrl.GetConfigOrDie()
-	mgr, err := ctrl.NewManager(config, ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                server.Options{BindAddress: metricsAddr},
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "plexus-controller.plexus.gg",
-	})
+	mgr, err := ctrl.NewManager(config, runtimeManagerOptions(contract, metricsAddr, probeAddr, enableLeaderElection))
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
@@ -99,14 +110,47 @@ func main() {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	if err := mgr.AddReadyzCheck("gameserver-crd", gameServerCRDReadyz(mgr.GetAPIReader(), contract)); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager")
+	setupLog.Info("starting manager", "apiGroup", contract.Group, "namespace", contract.Namespace)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
+	}
+}
+
+func runtimeManagerOptions(contract runtimeapi.Contract, metricsAddr string, probeAddr string, enableLeaderElection bool) ctrl.Options {
+	return ctrl.Options{
+		Scheme:                  scheme,
+		Metrics:                 server.Options{BindAddress: metricsAddr},
+		HealthProbeBindAddress:  probeAddr,
+		LeaderElection:          enableLeaderElection,
+		LeaderElectionID:        "plexus-controller.plexus.gg",
+		LeaderElectionNamespace: contract.Namespace,
+		Cache: cache.Options{
+			DefaultNamespaces: map[string]cache.Config{
+				contract.Namespace: {},
+			},
+		},
+	}
+}
+
+func gameServerCRDReadyz(reader client.Reader, contract runtimeapi.Contract) healthz.Checker {
+	return func(req *http.Request) error {
+		var crd apiextensionsv1.CustomResourceDefinition
+		if err := reader.Get(req.Context(), types.NamespacedName{Name: contract.GameServerCRDName()}, &crd); err != nil {
+			return fmt.Errorf("GameServer CRD %s: %w", contract.GameServerCRDName(), err)
+		}
+		document := runtimeapi.CRDDocument{
+			Metadata: runtimeapi.CRDMetadata{Name: crd.Name},
+			Spec:     runtimeapi.CRDSpec{Group: crd.Spec.Group},
+		}
+		for _, version := range crd.Spec.Versions {
+			document.Spec.Versions = append(document.Spec.Versions, runtimeapi.CRDVersion{Name: version.Name, Served: version.Served})
+		}
+		return contract.CheckGameServerCRD(document)
 	}
 }

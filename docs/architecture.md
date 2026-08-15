@@ -107,7 +107,7 @@ free-form diagnostics.
 
 ## GameServer Custom Resource
 
-The controller reconciles `GameServer` resources in the `plexus.gg/v1alpha1` API group.
+The controller reconciles `GameServer` resources in a runtime API group that defaults to `plexus.gg`. `PLEXUS_API_GROUP` may select a different group (Dev or a slot) while the compiled version stays `v1alpha1`. Both the website and controller watch a single namespace from `PLEXUS_RUNTIME_NAMESPACE` and refuse ready until `gameservers.<group>` serves that compiled version.
 
 Key responsibilities of the CR:
 

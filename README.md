@@ -47,6 +47,8 @@ make install
 make run
 ```
 
+The manager and website share one runtime contract: `PLEXUS_API_GROUP` (default `plexus.gg`) and `PLEXUS_RUNTIME_NAMESPACE` (default `app-plexus`). The compiled API version stays `v1alpha1`. Both processes refuse ready until `gameservers.<group>` serves that version. The controller cache and Role are namespace-scoped.
+
 The Factorio GameServer workload uses the Plexus supervisor image built from
 `Dockerfile.factorio` (`make docker-build-factorio`) and published from this
 repository as `ghcr.io/anthonyposchen/plexus-factorio`. GameDefinition points
@@ -67,7 +69,7 @@ local envtest binaries are installed:
 ```bash
 go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 export KUBEBUILDER_ASSETS="$(setup-envtest use -p path 1.36.x!)"
-go test ./internal/controller -run TestFactorioRunningStoppedEnvtest -count=1
+go test -mod=vendor ./internal/controller -run TestFactorioRunningStoppedEnvtest -count=1
 ```
 
 The scenario installs the generated `GameServer` CRD into envtest, reconciles a
