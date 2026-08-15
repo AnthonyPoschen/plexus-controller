@@ -19,6 +19,9 @@ func TestFactorioModUpdatePolicyAppliesOnNextStartNeverAutomatically(t *testing.
 	if ModUpdateCustomerMessage(true) != "Restart to apply" || ModUpdateCustomerMessage(false) != "Start to apply" {
 		t.Fatal("Factorio update messaging must stay policy-derived and restart-free")
 	}
+	if Schema().Broadcast.AutomaticRestart || Schema().Mods.AutomaticRestart {
+		t.Fatal("Factorio broadcast and mod apply must never restart automatically")
+	}
 }
 
 func TestValidateModArchiveAcceptsMatchingProviderRelease(t *testing.T) {
