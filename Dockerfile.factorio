@@ -1,3 +1,5 @@
+ARG FACTORIO_VERSION=2.0.77
+
 FROM golang:1.26.3-alpine AS supervisor
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -7,7 +9,6 @@ RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o /game-super
 
 # Game files come from the matching dedicated-server patch. The published
 # runtime replaces that image's entrypoint with the Plexus supervisor.
-ARG FACTORIO_VERSION=2.0.77
 FROM factoriotools/factorio:${FACTORIO_VERSION}
 USER root
 COPY --from=supervisor /game-supervisor /usr/local/bin/game-supervisor
