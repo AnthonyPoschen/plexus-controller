@@ -310,9 +310,10 @@ remains scoped to that available configuration while a replacement is pending
 or failed. The controller inspects matching owned Pod/init status: only an
 actual mod-sync termination becomes `ModInstallFailed`, while scheduling,
 image-pull, initialization, and ordinary rollout failures retain their own
-truth without exposing container details. The runtime image is pinned to the
-adapter's supported Factorio 2.0 patch release. Desired selection alone never
-becomes an installed observation. Bounded Secret staging supports this thin
+truth without exposing container details. The runtime image is the
+Plexus-owned Factorio supervisor image, pinned to the adapter's supported
+Factorio 2.0 patch release, not `factoriotools/factorio`. Desired selection
+alone never becomes an installed observation. Bounded Secret staging supports this thin
 tracer only. Larger artifacts remain assigned to the future object-storage and
 managed editor/job path.
 
@@ -346,9 +347,14 @@ consistently with `plexus.gg/server-id`.
 
 Running is reported only after the Deployment controller has observed the
 current revision, an updated replica is available, and its public endpoint is
-assigned. Every Factorio pod carries the adapter's `rcon /quit`
-graceful-shutdown hook and 90-second timeout, so current Graceful stop intent is
-not dependent on the mode used when the pod was created. If that adapter
+assigned. Every Factorio pod runs the Plexus game supervisor as PID 1. The
+supervisor boots the already-materialized save, config, and mods from disk,
+retries unexpected game-process exits in-pod, then exits so Kubernetes can
+reschedule. It does not watch or reconcile the GameServer CR. SIGTERM runs the
+adapter's `rcon /quit` sequence inside the 90-second grace period; exit 0 is
+graceful, and a Kubernetes SIGKILL is not. Desired power Stopped removes the
+pod. Current Graceful stop intent is not dependent on the mode used when the
+pod was created. If that adapter
 timeout elapses while the workload is still terminating, status reports
 `Taking longer than expected` without deleting the GameServer, Service
 identity, selected setup, or PVC. Force stop intent deletes UID-bound live

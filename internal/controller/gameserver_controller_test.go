@@ -60,16 +60,15 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	var deployment appsv1.Deployment
 	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
 	assertOwnedAndLabeled(t, gameServer, &deployment)
-	if deployment.Spec.Template.Spec.Containers[0].Image != "factoriotools/factorio:"+factorio.SupportedRuntimeVersion {
+	if deployment.Spec.Template.Spec.Containers[0].Image != factorio.RuntimeImage {
 		t.Fatalf("Factorio image = %q", deployment.Spec.Template.Spec.Containers[0].Image)
 	}
 	if got := deployment.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath; got != "/factorio" {
 		t.Fatalf("persistent mount path = %q", got)
 	}
 	container := deployment.Spec.Template.Spec.Containers[0]
-	if container.Lifecycle == nil || container.Lifecycle.PreStop == nil || container.Lifecycle.PreStop.Exec == nil ||
-		!reflect.DeepEqual(container.Lifecycle.PreStop.Exec.Command, []string{"rcon", "/quit"}) {
-		t.Fatalf("Factorio graceful shutdown hook = %#v", container.Lifecycle)
+	if container.Lifecycle != nil {
+		t.Fatalf("Factorio supervisor should own graceful stop on SIGTERM, got %#v", container.Lifecycle)
 	}
 	if deployment.Spec.Template.Spec.TerminationGracePeriodSeconds == nil || *deployment.Spec.Template.Spec.TerminationGracePeriodSeconds != 90 {
 		t.Fatalf("Factorio termination grace period = %#v", deployment.Spec.Template.Spec.TerminationGracePeriodSeconds)
@@ -383,9 +382,8 @@ func TestFactorioStopUsesCurrentShutdownMode(t *testing.T) {
 			var deployment appsv1.Deployment
 			get(t, ctx, kubeClient, request.NamespacedName, &deployment)
 			container := deployment.Spec.Template.Spec.Containers[0]
-			if container.Lifecycle == nil || container.Lifecycle.PreStop == nil || container.Lifecycle.PreStop.Exec == nil ||
-				!reflect.DeepEqual(container.Lifecycle.PreStop.Exec.Command, []string{"rcon", "/quit"}) {
-				t.Fatalf("running %s pod graceful shutdown hook = %#v", test.runningMode, container.Lifecycle)
+			if container.Lifecycle != nil {
+				t.Fatalf("running %s pod should not encode Factorio shutdown in PreStop, got %#v", test.runningMode, container.Lifecycle)
 			}
 			if grace := deployment.Spec.Template.Spec.TerminationGracePeriodSeconds; grace == nil || *grace != 90 {
 				t.Fatalf("running %s pod termination grace period = %#v", test.runningMode, grace)
