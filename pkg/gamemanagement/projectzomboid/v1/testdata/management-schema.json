@@ -1,0 +1,204 @@
+{
+  "gameID": "project-zomboid",
+  "version": "project-zomboid/v1",
+  "displayName": "Project Zomboid",
+  "configuration": {
+    "sections": [
+      {
+        "id": "identity",
+        "title": "Server details",
+        "fields": [
+          {
+            "path": "name",
+            "label": "Server name",
+            "description": "Name shown to players joining this hosted world.",
+            "type": "string",
+            "required": true,
+            "sensitive": false,
+            "default": "Plexus Zomboid",
+            "constraints": {
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          {
+            "path": "description",
+            "label": "Description",
+            "description": "Optional public description shown with the hosted world.",
+            "type": "string",
+            "required": false,
+            "sensitive": false,
+            "constraints": {
+              "maxLength": 500
+            }
+          }
+        ]
+      },
+      {
+        "id": "access",
+        "title": "Access and world rules",
+        "fields": [
+          {
+            "path": "maxPlayers",
+            "label": "Maximum players",
+            "description": "Maximum concurrent survivors on this hosted world.",
+            "type": "integer",
+            "required": true,
+            "sensitive": false,
+            "default": 16,
+            "constraints": {
+              "minimum": 1,
+              "maximum": 64
+            }
+          },
+          {
+            "path": "public",
+            "label": "Open to approved players",
+            "description": "Allow players who are not already allowlisted to attempt to join.",
+            "type": "boolean",
+            "required": true,
+            "sensitive": false,
+            "default": false
+          },
+          {
+            "path": "pvp",
+            "label": "Player versus player",
+            "description": "Allow survivors to damage each other.",
+            "type": "boolean",
+            "required": true,
+            "sensitive": false,
+            "default": true
+          },
+          {
+            "path": "pauseEmpty",
+            "label": "Pause when empty",
+            "description": "Pause the world when no players are connected.",
+            "type": "boolean",
+            "required": true,
+            "sensitive": false,
+            "default": true
+          }
+        ]
+      }
+    ]
+  },
+  "secrets": {
+    "version": "project-zomboid-secrets/v1",
+    "fields": [
+      {
+        "path": "adminPassword",
+        "label": "Admin password",
+        "description": "Password for the hosted in-game admin account.",
+        "type": "secret",
+        "required": true,
+        "sensitive": true,
+        "constraints": {
+          "minLength": 8,
+          "maxLength": 64
+        }
+      },
+      {
+        "path": "serverPassword",
+        "label": "Join password",
+        "description": "Optional password players must enter before joining.",
+        "type": "secret",
+        "required": false,
+        "sensitive": true,
+        "constraints": {
+          "minLength": 8,
+          "maxLength": 64
+        }
+      },
+      {
+        "path": "rconPassword",
+        "label": "RCON password",
+        "description": "Platform-generated credential reserved for future remote administration.",
+        "type": "secret",
+        "required": true,
+        "sensitive": true,
+        "generated": true,
+        "constraints": {
+          "minLength": 16,
+          "maxLength": 64
+        }
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "configuration",
+      "released": true,
+      "description": "Tailored server settings backed by the typed Project Zomboid configuration."
+    },
+    {
+      "id": "mods",
+      "released": false,
+      "description": "Workshop mod management is not released for Project Zomboid."
+    },
+    {
+      "id": "saves",
+      "released": false,
+      "description": "Hosted save import and export are not released for Project Zomboid."
+    },
+    {
+      "id": "console",
+      "released": false,
+      "description": "Interactive Project Zomboid administration is not released."
+    },
+    {
+      "id": "logs",
+      "released": true,
+      "description": "Read-only live container output."
+    }
+  ],
+  "runtime": {
+    "channels": [
+      {
+        "id": "container-stdout",
+        "label": "Server output",
+        "interaction": "read-only",
+        "protocol": "container-stdout",
+        "released": true
+      }
+    ]
+  },
+  "shutdown": {
+    "strategy": "process-signal",
+    "command": "",
+    "timeoutSeconds": 120,
+    "forceSupported": true
+  },
+  "saves": {
+    "importReleased": false,
+    "exportReleased": false,
+    "requiresStopped": true,
+    "destructiveImport": true,
+    "leavesServerStopped": true,
+    "archiveFormat": "",
+    "mediaTypes": null,
+    "fileExtensions": null,
+    "requiredEntries": null,
+    "maximumArchiveBytes": 0,
+    "maximumExpandedBytes": 0,
+    "maximumEntries": 0
+  },
+  "mods": {
+    "providerID": "",
+    "providerName": "",
+    "providerURL": "",
+    "released": false,
+    "nativeDiscovery": false,
+    "directReference": false,
+    "dependencyResolution": "",
+    "versionSelection": "",
+    "compatibility": "",
+    "applyPolicy": "",
+    "requiresStopped": true,
+    "automaticRestart": false,
+    "clientSynchronization": ""
+  },
+  "broadcast": {
+    "released": false,
+    "automaticRestart": false
+  }
+}

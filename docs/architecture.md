@@ -13,7 +13,10 @@ The `GameServer` CR is the narrow contract between the two.
 
 The first Factorio management release exposes configuration, native mod
 discovery, save import/export, interactive RCON, and live container logs.
-The Factorio file log channel remains unreleased.
+The Factorio file log channel remains unreleased. Project Zomboid is the
+second adapter: configuration, process-signal graceful shutdown, and live
+container logs are released. Workshop mods, save transfer, and interactive
+console remain unreleased.
 
 One stable `GameServer` always represents one customer Server. Clearing its
 selected setup unloads it without deleting the resource or retained setup data;
@@ -274,7 +277,9 @@ registry exposes schemas without requiring a running controller. Factorio's
 first contract is `pkg/gamemanagement/factorio/v1` and owns its typed
 configuration and secrets, management form schema, capability release flags,
 runtime channels, shutdown policy, save-archive validation, and mod-provider
-policy.
+policy. Project Zomboid's contract is `pkg/gamemanagement/projectzomboid/v1`
+and uses the same registry so backend management code does not grow a second
+game-specific configuration path.
 
 Serialized schemas are compatibility surfaces. Adapter changes must update the
 controller golden serialization test and use a new versioned package for

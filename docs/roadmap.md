@@ -136,6 +136,11 @@ Exit criteria:
 
 ### Phase 5: Multiple Games + Rich Profiles
 
+Project Zomboid is the second released runtime adapter. It shares the generic
+GameServer contract for workload, configuration, secrets, graceful shutdown,
+endpoint, and status. Only configuration and live container logs are released;
+mods, saves, and console stay adapter-gated.
+
 - Expand `GameRuntimeProfile` coverage for all supported games.
 - Game-specific probes, graceful shutdown, backup hooks, mod loading behavior.
 - Per-game editor pod requirements (extra tools, security context, etc.).
