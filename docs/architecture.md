@@ -43,6 +43,11 @@ an unloaded Server is valid only with `spec.desiredPower: Stopped`.
 - Managed mutations run only while the game process is down. General managed
   disk operations use an editor pod; the bounded Factorio provider-ID tracer
   uses a startup init container before the game container begins.
+- Factorio applies the backend-staged enabled selection at startup through that
+  init container and reports the observed installed version only after the
+  matching generation becomes available. Detected provider updates never
+  increment restart generation or otherwise restart a GameServer; the adapter
+  policy is next-start with join-time client synchronization.
   - On session end the controller tears down the editor pod.
 - This prevents live filesystem races, open file handle problems, and accidental corruption.
 
