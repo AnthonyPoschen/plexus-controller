@@ -56,14 +56,14 @@ func Schema() model.ManagementSchema {
 			},
 		},
 		Capabilities: []model.Capability{
-			{ID: "configuration", Released: false, Description: "Tailored server settings backed by the typed Factorio configuration."},
+			{ID: "configuration", Released: true, Description: "Tailored server settings backed by the typed Factorio configuration."},
 			{ID: "mods", Released: true, Description: "Provider-backed Factorio mod management."},
 			{ID: "saves", Released: true, Description: "Validated save export and destructive hosted-save replacement."},
-			{ID: "console", Released: false, Description: "Interactive Factorio administration over RCON."},
+			{ID: "console", Released: true, Description: "Interactive Factorio administration over RCON."},
 			{ID: "logs", Released: true, Description: "Read-only live container and Factorio log output."},
 		},
 		Runtime: model.RuntimePolicy{Channels: []model.RuntimeChannel{
-			{ID: "rcon", Label: "Game console", Interaction: model.InteractionInteractive, Protocol: "rcon", Released: false},
+			{ID: "rcon", Label: "Game console", Interaction: model.InteractionInteractive, Protocol: "rcon", Released: true},
 			{ID: "container-stdout", Label: "Server output", Interaction: model.InteractionReadOnly, Protocol: "container-stdout", Released: true},
 			{ID: "factorio-log", Label: "Factorio log", Interaction: model.InteractionReadOnly, Protocol: "file", Released: false},
 		}},
@@ -77,7 +77,7 @@ func Schema() model.ManagementSchema {
 		},
 		Mods: model.ModProviderPolicy{
 			ProviderID: "factorio-mod-portal", ProviderName: "Factorio Mod Portal", ProviderURL: "https://mods.factorio.com",
-			Released: true, NativeDiscovery: false, DirectReference: true, DependencyResolution: "provider-metadata",
+			Released: true, NativeDiscovery: true, DirectReference: true, DependencyResolution: "provider-metadata",
 			VersionSelection: "latest-compatible", Compatibility: "factorio-version", ApplyPolicy: "next-start",
 			RequiresStopped: true, AutomaticRestart: false, ClientSynchronization: "join-time",
 		},

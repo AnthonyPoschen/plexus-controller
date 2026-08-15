@@ -11,6 +11,10 @@ Plexus treats the backend database as the product and entitlement source of trut
 
 The `GameServer` CR is the narrow contract between the two.
 
+The first Factorio management release exposes configuration, native mod
+discovery, save import/export, interactive RCON, and live container logs.
+The Factorio file log channel remains unreleased.
+
 One stable `GameServer` always represents one customer Server. Clearing its
 selected setup unloads it without deleting the resource or retained setup data;
 an unloaded Server is valid only with `spec.desiredPower: Stopped`.

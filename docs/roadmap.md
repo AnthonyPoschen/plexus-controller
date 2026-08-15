@@ -69,7 +69,10 @@ Exit criteria:
 
 The controller-owned `factorio/v1` game-management contract provides the typed
 configuration/secret boundary and serialized schema consumed by both
-repositories. Factorio reconciliation now validates that contract, renders its
+repositories. The first management release marks Factorio configuration,
+native mod discovery, save import/export, interactive RCON, and live container
+logs as released; the Factorio file log channel remains unreleased. Factorio
+reconciliation now validates that contract, renders its
 settings ConfigMap and Secret-backed environment on Start, rejects incompatible
 schema revisions with migration-required status, and acknowledges the active
 configuration generation and Secret revision only after rollout availability.
@@ -90,11 +93,11 @@ Exit criteria:
 
 ### Phase 3: Editor Pod Lifecycle (Managed Disk Operations)
 
-The narrow Factorio provider-ID tracer now installs one bounded, backend-
-validated immutable artifact during the next startup init sequence and reports
-its observed version. It intentionally does not provide native discovery,
-arbitrary uploads, customer filesystem access, general editor sessions, or
-large-artifact transfer; those remain in this and Phase 4.
+The Factorio provider-ID tracer installs bounded, backend-validated immutable
+artifacts during the next startup init sequence and reports observed versions.
+Native Mod Portal discovery is released for Factorio. It intentionally does not
+provide arbitrary uploads, customer filesystem access, general editor sessions,
+or large-artifact transfer; those remain in this and Phase 4.
 
 - Add support for on-demand editor pod creation when the main game server is stopped.
 - Editor pod mounts the same PVC(s) as the game server.
