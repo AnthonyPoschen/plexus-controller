@@ -15,6 +15,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -103,7 +104,7 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	if got := deployment.Spec.Template.Spec.Containers[0].VolumeMounts[1]; got.Name != "factorio-config" || got.MountPath != "/factorio/config" || got.SubPath != "" || got.ReadOnly {
 		t.Fatalf("Factorio configuration mount = %#v", got)
 	}
-	if len(deployment.Spec.Template.Spec.InitContainers) != 2 {
+	if len(deployment.Spec.Template.Spec.InitContainers) != 1 {
 		t.Fatalf("Factorio configuration init containers = %#v", deployment.Spec.Template.Spec.InitContainers)
 	}
 	configInit := deployment.Spec.Template.Spec.InitContainers[0]
@@ -113,10 +114,6 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	}
 	if len(configInit.VolumeMounts) != 2 || configInit.VolumeMounts[0].Name != "factorio-config-source" || !configInit.VolumeMounts[0].ReadOnly || configInit.VolumeMounts[1].Name != "factorio-config" {
 		t.Fatalf("Factorio configuration init mounts = %#v", configInit.VolumeMounts)
-	}
-	modInit := deployment.Spec.Template.Spec.InitContainers[1]
-	if modInit.Name != "factorio-mod-sync" || len(modInit.VolumeMounts) != 1 || modInit.VolumeMounts[0].Name != dataVolumeName {
-		t.Fatalf("Factorio mod sync init container = %#v", modInit)
 	}
 
 	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
@@ -209,7 +206,7 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-runtime-g1-r1"}, &corev1.Secret{})
 }
 
-func TestFactorioModArtifactIsInstalledAndReportedOnlyAfterAvailability(t *testing.T) {
+func TestFactorioModArtifactIsInstalledByDiskJobBeforeWorkload(t *testing.T) {
 	ctx := context.Background()
 	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
 	archive := testFactorioModArchive(t)
@@ -221,30 +218,40 @@ func TestFactorioModArtifactIsInstalledAndReportedOnlyAfterAvailability(t *testi
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
 	reconcileTwice(t, ctx, reconciler, request)
 
-	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
-	modInit := deployment.Spec.Template.Spec.InitContainers[1]
-	if !strings.Contains(modInit.Args[0], "/factorio/mods/tiny-mod_1.2.3.zip") || len(modInit.VolumeMounts) != 2 {
-		t.Fatalf("managed mod install init = %#v", modInit)
+	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("game supervisor was scheduled before the disk job finished: %v", err)
+	}
+	var job batchv1.Job
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &job)
+	assertOwnedAndLabeledExceptComponent(t, gameServer, &job, plexusv1alpha1.ComponentManagedDisk)
+	if job.Spec.Template.Spec.Containers[0].Name != diskJobContainer || !strings.Contains(job.Spec.Template.Spec.Containers[0].Args[0], "/factorio/mods/tiny-mod_1.2.3.zip") {
+		t.Fatalf("managed disk job = %#v", job.Spec.Template.Spec.Containers)
 	}
 	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStarting || current.Status.Message != "Applying Factorio mods" {
+		t.Fatalf("start during disk job status = %#v", current.Status)
+	}
 	if len(current.Status.InstalledMods) != 0 {
-		t.Fatalf("pending workload reported installed mods: %#v", current.Status.InstalledMods)
+		t.Fatalf("pending disk job reported installed mods: %#v", current.Status.InstalledMods)
 	}
 
-	deployment.Status.ObservedGeneration = deployment.Generation
-	deployment.Status.Replicas, deployment.Status.UpdatedReplicas, deployment.Status.AvailableReplicas = 1, 1, 1
-	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+	job.Status.Succeeded = 1
+	if err := kubeClient.Status().Update(ctx, &job); err != nil {
 		t.Fatal(err)
 	}
 	reconcileOnce(t, ctx, reconciler, request)
 	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
 	if len(current.Status.InstalledMods) != 1 || current.Status.InstalledMods[0].Version != "1.2.3" || current.Status.InstalledModsGeneration != current.Generation {
-		t.Fatalf("available workload installed mods = %#v", current.Status.InstalledMods)
+		t.Fatalf("disk job installed mods = %#v", current.Status.InstalledMods)
+	}
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	if len(deployment.Spec.Template.Spec.InitContainers) != 1 || deployment.Spec.Template.Spec.InitContainers[0].Name != "factorio-config-init" {
+		t.Fatalf("supervisor should not remount mods after the disk job: %#v", deployment.Spec.Template.Spec.InitContainers)
 	}
 }
 
-func TestFactorioModRemovalClearsArchiveAndObservationOnlyAfterAvailability(t *testing.T) {
+func TestFactorioModRemovalClearsArchiveThroughDiskJob(t *testing.T) {
 	ctx := context.Background()
 	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
 	gameServer.Generation = 2
@@ -254,36 +261,37 @@ func TestFactorioModRemovalClearsArchiveAndObservationOnlyAfterAvailability(t *t
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
 	reconcileTwice(t, ctx, reconciler, request)
 
-	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
-	modInit := deployment.Spec.Template.Spec.InitContainers[1]
-	if !strings.Contains(modInit.Args[0], "find /factorio/mods -maxdepth 1 -type f -name '*.zip' -delete") || strings.Contains(modInit.Args[0], "cp /plexus/mod/") || len(modInit.VolumeMounts) != 1 {
-		t.Fatalf("managed mod removal init = %#v", modInit)
+	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("game supervisor was scheduled before mod removal finished: %v", err)
+	}
+	var job batchv1.Job
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &job)
+	command := job.Spec.Template.Spec.Containers[0].Args[0]
+	if !strings.Contains(command, "find /factorio/mods -maxdepth 1 -type f -name '*.zip' -delete") || strings.Contains(command, "cp /plexus/mod/") {
+		t.Fatalf("managed mod removal job = %#v", job.Spec.Template.Spec.Containers)
 	}
 	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
 	if len(current.Status.InstalledMods) != 1 || current.Status.InstalledModsGeneration != 1 {
 		t.Fatalf("pending removal discarded installed observation: %#v", current.Status)
 	}
 
-	deployment.Status.ObservedGeneration = deployment.Generation
-	deployment.Status.Replicas, deployment.Status.UpdatedReplicas, deployment.Status.AvailableReplicas = 1, 1, 1
-	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+	job.Status.Succeeded = 1
+	if err := kubeClient.Status().Update(ctx, &job); err != nil {
 		t.Fatal(err)
 	}
 	reconcileOnce(t, ctx, reconciler, request)
 	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
 	if len(current.Status.InstalledMods) != 0 || current.Status.InstalledModsGeneration != 2 {
-		t.Fatalf("available mod-free workload observation = %#v", current.Status)
+		t.Fatalf("disk job mod-free observation = %#v", current.Status)
 	}
+	get(t, ctx, kubeClient, request.NamespacedName, &appsv1.Deployment{})
 }
 
 func TestFactorioWorkloadFailuresPreserveFailureTruth(t *testing.T) {
 	for _, test := range []struct {
 		name, reason string
-		withMod      bool
 		status       corev1.PodStatus
 	}{
-		{name: "mod init termination", reason: "ModInstallFailed", withMod: true, status: corev1.PodStatus{InitContainerStatuses: []corev1.ContainerStatus{{Name: "factorio-mod-sync", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Message: "provider-secret-token"}}}}}},
 		{name: "image pull", reason: "WorkloadImagePullFailed", status: corev1.PodStatus{InitContainerStatuses: []corev1.ContainerStatus{{Name: "factorio-config-init", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff", Message: "registry-secret"}}}}}},
 		{name: "scheduling", reason: "WorkloadSchedulingFailed", status: corev1.PodStatus{Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: corev1.PodReasonUnschedulable, Message: "private-node-details"}}}},
 		{name: "zero mods ordinary rollout", reason: "WorkloadRolloutFailed"},
@@ -291,15 +299,7 @@ func TestFactorioWorkloadFailuresPreserveFailureTruth(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
 			gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
-			objects := []client.Object{gameServer}
-			if test.withMod {
-				archive := testFactorioModArchive(t)
-				digest := sha256.Sum256(archive)
-				sha := hex.EncodeToString(digest[:])
-				gameServer.Spec.SelectedSetup.Mods = []plexusv1alpha1.ModSpec{{ProviderID: factorio.ModProviderID, ProviderModID: "tiny-mod", Name: "tiny-mod", Version: "1.2.3", GameVersion: factorio.SupportedFactorioVersion, Dependencies: []string{"base >= 2.0"}, ArchiveFileName: "tiny-mod_1.2.3.zip", ArchiveSHA256: sha, ArtifactRef: "setup-1-mod"}}
-				objects = append(objects, testModArtifactSecret(gameServer, archive, sha))
-			}
-			reconciler, kubeClient := testReconciler(t, objects...)
+			reconciler, kubeClient := testReconciler(t, gameServer)
 			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
 			reconcileTwice(t, ctx, reconciler, request)
 			var deployment appsv1.Deployment
@@ -321,6 +321,161 @@ func TestFactorioWorkloadFailuresPreserveFailureTruth(t *testing.T) {
 				t.Fatalf("failure leaked sensitive detail: %q", current.Status.Message)
 			}
 		})
+	}
+}
+
+func TestStoppedServerRunsOneManagedDiskJobThatExits(t *testing.T) {
+	ctx := context.Background()
+	gameServer, artifact := testFactorioServerWithMod(t, plexusv1alpha1.DesiredPowerStopped)
+	reconciler, kubeClient := testReconciler(t, gameServer, artifact)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("stopped server scheduled a game supervisor: %v", err)
+	}
+	var job batchv1.Job
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &job)
+	if len(job.Spec.Template.Spec.Volumes) == 0 || job.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim == nil || job.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName != gameServer.Name {
+		t.Fatalf("disk job did not mount the PVC: %#v", job.Spec.Template.Spec.Volumes)
+	}
+	if job.Spec.Template.Spec.RestartPolicy != corev1.RestartPolicyNever || job.Spec.BackoffLimit == nil || *job.Spec.BackoffLimit != 0 {
+		t.Fatalf("disk job is not short-lived: %#v", job.Spec)
+	}
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStopped {
+		t.Fatalf("stopped server with a disk job phase = %q", current.Status.Phase)
+	}
+
+	job.Status.Succeeded = 1
+	if err := kubeClient.Status().Update(ctx, &job); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	if err := kubeClient.Get(ctx, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("successful disk job was retained: %v", err)
+	}
+	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("stopped server started a supervisor after the job: %v", err)
+	}
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStopped || len(current.Status.InstalledMods) != 1 {
+		t.Fatalf("stopped server after disk job = %#v", current.Status)
+	}
+}
+
+func TestStartDuringManagedDiskJobShowsStartingAndDoesNotScheduleSupervisor(t *testing.T) {
+	ctx := context.Background()
+	gameServer, artifact := testFactorioServerWithMod(t, plexusv1alpha1.DesiredPowerStopped)
+	reconciler, kubeClient := testReconciler(t, gameServer, artifact)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &batchv1.Job{})
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	current.Spec.DesiredPower = plexusv1alpha1.DesiredPowerRunning
+	current.Generation++
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStarting || current.Status.Message != "Applying Factorio mods" {
+		t.Fatalf("start during job status = %#v", current.Status)
+	}
+	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("supervisor scheduled while the disk job still holds the PVC: %v", err)
+	}
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &batchv1.Job{})
+}
+
+func TestStopDuringManagedDiskJobLeavesJobAndDoesNotStartSupervisor(t *testing.T) {
+	ctx := context.Background()
+	gameServer, artifact := testFactorioServerWithMod(t, plexusv1alpha1.DesiredPowerRunning)
+	reconciler, kubeClient := testReconciler(t, gameServer, artifact)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &batchv1.Job{})
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	current.Spec.DesiredPower = plexusv1alpha1.DesiredPowerStopped
+	current.Generation++
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &batchv1.Job{})
+	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("stop during job scheduled a supervisor: %v", err)
+	}
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Spec.DesiredPower != plexusv1alpha1.DesiredPowerStopped {
+		t.Fatalf("stop did not keep desired power Stopped: %q", current.Spec.DesiredPower)
+	}
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStopped {
+		t.Fatalf("stop during job phase = %q", current.Status.Phase)
+	}
+
+	var job batchv1.Job
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &job)
+	job.Status.Succeeded = 1
+	if err := kubeClient.Status().Update(ctx, &job); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("supervisor started after stop once the job finished: %v", err)
+	}
+}
+
+func TestManagedDiskJobFailureYieldsFailedAndNoSupervisor(t *testing.T) {
+	ctx := context.Background()
+	gameServer, artifact := testFactorioServerWithMod(t, plexusv1alpha1.DesiredPowerRunning)
+	reconciler, kubeClient := testReconciler(t, gameServer, artifact)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var job batchv1.Job
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &job)
+	job.Status.Failed = 1
+	if err := kubeClient.Status().Update(ctx, &job); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseFailed || conditionReason(current, conditionReady) != "ModInstallFailed" {
+		t.Fatalf("failed disk job status = %#v", current.Status)
+	}
+	if strings.Contains(current.Status.Message, "secret") {
+		t.Fatalf("failure leaked sensitive detail: %q", current.Status.Message)
+	}
+	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("failed disk job still scheduled a supervisor: %v", err)
+	}
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &job)
+}
+
+func TestStartWaitsForSaveImportJobBeforeSchedulingSupervisor(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	replacement := &plexusv1alpha1.SaveImport{
+		ObjectMeta: metav1.ObjectMeta{Name: "import-1", Namespace: gameServer.Namespace, Labels: map[string]string{plexusv1alpha1.LabelServerID: gameServer.Spec.ServerID}},
+		Spec:       plexusv1alpha1.SaveImportSpec{ServerID: gameServer.Spec.ServerID, OwnerUserID: gameServer.Spec.OwnerUserID, SetupID: "setup-1", GameID: factorio.GameID, DownloadURLSecretRef: "import-secret", ArchiveName: "world.zip"},
+		Status:     plexusv1alpha1.SaveImportStatus{Phase: plexusv1alpha1.SaveImportRunning, Message: "Replacing hosted save data"},
+	}
+	reconciler, kubeClient := testReconciler(t, gameServer, replacement)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStarting || current.Status.Message != pendingWorkApplyingSave {
+		t.Fatalf("start during save import status = %#v", current.Status)
+	}
+	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("supervisor scheduled while save import holds the PVC: %v", err)
 	}
 }
 
@@ -1573,6 +1728,16 @@ func testGameServer(power plexusv1alpha1.DesiredPower) *plexusv1alpha1.GameServe
 	return testGameServerForGame(power, factorio.GameID, factorio.SchemaVersion)
 }
 
+func testFactorioServerWithMod(t *testing.T, power plexusv1alpha1.DesiredPower) (*plexusv1alpha1.GameServer, *corev1.Secret) {
+	t.Helper()
+	gameServer := testGameServer(power)
+	archive := testFactorioModArchive(t)
+	digest := sha256.Sum256(archive)
+	sha := hex.EncodeToString(digest[:])
+	gameServer.Spec.SelectedSetup.Mods = []plexusv1alpha1.ModSpec{{ProviderID: factorio.ModProviderID, ProviderModID: "tiny-mod", Name: "tiny-mod", Version: "1.2.3", GameVersion: factorio.SupportedFactorioVersion, Dependencies: []string{"base >= 2.0"}, ArchiveFileName: "tiny-mod_1.2.3.zip", ArchiveSHA256: sha, ArtifactRef: "setup-1-mod"}}
+	return gameServer, testModArtifactSecret(gameServer, archive, sha)
+}
+
 func testGameServerForGame(power plexusv1alpha1.DesiredPower, gameID string, schemaVersion string) *plexusv1alpha1.GameServer {
 	name := "factorio-1"
 	if gameID != factorio.GameID {
@@ -1622,7 +1787,7 @@ func testReconcilerWithoutSecretWithInterceptors(t *testing.T, interceptors inte
 		t.Fatal(err)
 	}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).
-		WithStatusSubresource(&plexusv1alpha1.GameServer{}, &appsv1.Deployment{}, &corev1.Service{}).
+		WithStatusSubresource(&plexusv1alpha1.GameServer{}, &appsv1.Deployment{}, &corev1.Service{}, &batchv1.Job{}).
 		WithObjects(objects...).WithInterceptorFuncs(interceptors).Build()
 	return &GameServerReconciler{Client: kubeClient, Scheme: scheme}, kubeClient
 }
@@ -1735,10 +1900,18 @@ func get(t *testing.T, ctx context.Context, kubeClient client.Client, key client
 
 func assertOwnedAndLabeled(t *testing.T, gameServer *plexusv1alpha1.GameServer, object client.Object) {
 	t.Helper()
+	assertOwnedAndLabeledExceptComponent(t, gameServer, object, plexusv1alpha1.ComponentGameServer)
+}
+
+func assertOwnedAndLabeledExceptComponent(t *testing.T, gameServer *plexusv1alpha1.GameServer, object client.Object, component string) {
+	t.Helper()
 	if object.GetLabels()[plexusv1alpha1.LabelServerID] != gameServer.Spec.ServerID ||
 		object.GetLabels()[plexusv1alpha1.LabelOwnerUserID] != gameServer.Spec.OwnerUserID ||
 		object.GetLabels()[plexusv1alpha1.LabelGameID] != "factorio" || object.GetLabels()[plexusv1alpha1.LabelSetupID] != "setup-1" {
 		t.Fatalf("%T labels = %#v", object, object.GetLabels())
+	}
+	if object.GetLabels()[plexusv1alpha1.LabelComponent] != component {
+		t.Fatalf("%T component = %q, want %q", object, object.GetLabels()[plexusv1alpha1.LabelComponent], component)
 	}
 	owner := metav1.GetControllerOf(object)
 	if owner == nil || owner.UID != gameServer.UID {
