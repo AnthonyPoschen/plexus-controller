@@ -47,6 +47,8 @@ make install
 make run
 ```
 
+The manager and website share one runtime contract: `PLEXUS_API_GROUP` (default `plexus.gg`) and `PLEXUS_RUNTIME_NAMESPACE` (default `app-plexus`). The compiled API version stays `v1alpha1`. Both processes refuse ready until `gameservers.<group>` serves that version. The controller cache and Role are namespace-scoped.
+
 Managed Factorio export additionally requires publishing
 `Dockerfile.save-exporter` and setting `PLEXUS_SAVE_EXPORTER_IMAGE` on the
 controller manager to that immutable image reference. The backend supplies the
