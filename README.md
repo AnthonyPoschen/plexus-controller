@@ -47,7 +47,7 @@ make install
 make run
 ```
 
-The manager and website share one runtime contract: `PLEXUS_API_GROUP` (default `plexus.gg`) and `PLEXUS_RUNTIME_NAMESPACE` (default `app-plexus`). The compiled API version stays `v1alpha1`. Both processes refuse ready until `gameservers.<group>` serves that version. The controller cache and Role are namespace-scoped.
+The manager and website share one runtime contract: `PLEXUS_API_GROUP` (default `plexus.gg`) and `PLEXUS_RUNTIME_NAMESPACE` (default `app-plexus`). The compiled API version stays `v1alpha1`. Both processes refuse ready until `gameservers.<group>` serves that version. The controller cache and Role are namespace-scoped. Dev Flux applies `kustomization/overlays/dev`, which rewrites the generated CRD to `gameservers.dev.plexus.gg` without claiming the shared `gs` shortName.
 
 The Factorio GameServer workload uses the Plexus supervisor image built from
 `Dockerfile.factorio` (`make docker-build-factorio`) and published from this
