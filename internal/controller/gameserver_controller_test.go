@@ -1501,6 +1501,76 @@ func TestProjectZomboidReconcileRunningThenStopped(t *testing.T) {
 	get(t, ctx, kubeClient, request.NamespacedName, &corev1.PersistentVolumeClaim{})
 }
 
+func TestProjectZomboidWorkshopSelectionAppliesAtStartupWithoutArtifact(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServerForGame(plexusv1alpha1.DesiredPowerRunning, zomboid.GameID, zomboid.SchemaVersion)
+	gameServer.Spec.SelectedSetup.Mods = []plexusv1alpha1.ModSpec{{
+		ProviderID: zomboid.ModProviderID, ProviderModID: "2160432461", Name: "Brita_2",
+		Version: "2026-08-01T12:00:00Z", GameVersion: zomboid.WorkshopAppIDString,
+		Dependencies: []string{"2685168362"}, LoadIDs: []string{"Brita_2", "tsarslib"},
+	}}
+	reconciler, kubeClient := testReconciler(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	if len(deployment.Spec.Template.Spec.InitContainers) != 1 || deployment.Spec.Template.Spec.InitContainers[0].Name != "zomboid-config-init" {
+		t.Fatalf("Project Zomboid Workshop must not add an artifact init: %#v", deployment.Spec.Template.Spec.InitContainers)
+	}
+	env := envMap(deployment.Spec.Template.Spec.Containers[0].Env)
+	if env[zomboid.WorkshopItemsEnv] != "2160432461;2685168362" || env[zomboid.WorkshopModNamesEnv] != "Brita_2;tsarslib" {
+		t.Fatalf("Project Zomboid Workshop startup env = %#v", env)
+	}
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if len(current.Status.InstalledMods) != 0 {
+		t.Fatalf("pending Workshop workload reported installed mods: %#v", current.Status.InstalledMods)
+	}
+
+	deployment.Status.ObservedGeneration = deployment.Generation
+	deployment.Status.Replicas, deployment.Status.UpdatedReplicas, deployment.Status.AvailableReplicas = 1, 1, 1
+	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	var service corev1.Service
+	get(t, ctx, kubeClient, request.NamespacedName, &service)
+	service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{Hostname: "zomboid.example.com"}}
+	if err := kubeClient.Status().Update(ctx, &service); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if len(current.Status.InstalledMods) != 1 || current.Status.InstalledMods[0].ProviderModID != "2160432461" || current.Status.InstalledMods[0].Version != "2026-08-01T12:00:00Z" {
+		t.Fatalf("available Workshop workload installed mods = %#v", current.Status.InstalledMods)
+	}
+}
+
+func TestProjectZomboidWorkshopRemovalClearsStartupEnv(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServerForGame(plexusv1alpha1.DesiredPowerRunning, zomboid.GameID, zomboid.SchemaVersion)
+	gameServer.Generation = 2
+	gameServer.Status.InstalledMods = []plexusv1alpha1.InstalledMod{{ProviderID: zomboid.ModProviderID, ProviderModID: "2160432461", Name: "Brita_2", Version: "2026-08-01T12:00:00Z"}}
+	gameServer.Status.InstalledModsGeneration = 1
+	reconciler, kubeClient := testReconciler(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	env := envMap(deployment.Spec.Template.Spec.Containers[0].Env)
+	if env[zomboid.WorkshopItemsEnv] != "" || env[zomboid.WorkshopModNamesEnv] != "" {
+		t.Fatalf("removed Workshop selection left startup env: %#v", env)
+	}
+}
+
+func envMap(values []corev1.EnvVar) map[string]string {
+	env := map[string]string{}
+	for _, value := range values {
+		env[value.Name] = value.Value
+	}
+	return env
+}
+
 func testGameServer(power plexusv1alpha1.DesiredPower) *plexusv1alpha1.GameServer {
 	return testGameServerForGame(power, factorio.GameID, factorio.SchemaVersion)
 }

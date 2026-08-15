@@ -29,6 +29,7 @@ import (
 	"github.com/AnthonyPoschen/plexus-controller/internal/games"
 	"github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement"
 	factorio "github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/factorio/v1"
+	zomboid "github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/projectzomboid/v1"
 )
 
 const (
@@ -201,16 +202,23 @@ func (r *GameServerReconciler) validateSetupSecret(ctx context.Context, gameServ
 	return secretEnv, revision, nil
 }
 
+func managesMods(definition games.GameDefinition) bool {
+	return definition.Workload.SupportsMods || definition.Workload.WorkshopStartup
+}
+
 func (r *GameServerReconciler) validateModArtifacts(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition) error {
 	mods := gameServer.Spec.SelectedSetup.Mods
-	if definition.Workload.SupportsMods == false {
+	if managesMods(definition) == false {
 		if len(mods) != 0 {
 			return fmt.Errorf("%s does not support managed mods", definition.DisplayName)
 		}
 		return nil
 	}
 	if len(mods) > 1 {
-		return fmt.Errorf("Factorio one-mod tracer accepts at most one enabled mod")
+		return fmt.Errorf("%s accepts at most one enabled mod selection", definition.DisplayName)
+	}
+	if definition.Workload.WorkshopStartup {
+		return validateWorkshopMods(mods)
 	}
 	for _, mod := range mods {
 		release := factorio.ModRelease{ProviderID: mod.ProviderID, ProviderModID: mod.ProviderModID, Name: mod.Name, Version: mod.Version, GameVersion: mod.GameVersion, Dependencies: mod.Dependencies}
@@ -244,6 +252,30 @@ func (r *GameServerReconciler) validateModArtifacts(ctx context.Context, gameSer
 		}
 	}
 	return nil
+}
+
+func validateWorkshopMods(mods []plexusv1alpha1.ModSpec) error {
+	for _, mod := range mods {
+		if strings.TrimSpace(mod.ArtifactRef) != "" || strings.TrimSpace(mod.ArchiveSHA256) != "" {
+			return fmt.Errorf("Steam Workshop selection must not include a staged archive")
+		}
+		if err := zomboid.ValidateModRelease(workshopRelease(mod)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func workshopRelease(mod plexusv1alpha1.ModSpec) zomboid.ModRelease {
+	return zomboid.ModRelease{
+		ProviderID:    mod.ProviderID,
+		ProviderModID: mod.ProviderModID,
+		Name:          mod.Name,
+		Version:       mod.Version,
+		GameVersion:   mod.GameVersion,
+		Dependencies:  append([]string(nil), mod.Dependencies...),
+		LoadIDs:       append([]string(nil), mod.LoadIDs...),
+	}
 }
 
 type setupSecretMigrationError struct {
@@ -311,7 +343,7 @@ func (r *GameServerReconciler) reconcileRunning(ctx context.Context, gameServer 
 		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "EndpointPending", fmt.Sprintf("%s is available, but the load balancer has not assigned a public endpoint", definition.DisplayName))
 		setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is ready")
 		setEndpointCondition(&status, gameServer.Generation, false)
-		if definition.Workload.SupportsMods {
+		if managesMods(definition) {
 			setCondition(&status, gameServer.Generation, conditionMods, metav1.ConditionTrue, "ModsInstalled", fmt.Sprintf("Enabled %s mod selection was installed by the available workload", definition.DisplayName))
 		}
 		return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
@@ -324,7 +356,7 @@ func (r *GameServerReconciler) reconcileRunning(ctx context.Context, gameServer 
 	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionTrue, "WorkloadAvailable", fmt.Sprintf("%s workload is available", definition.DisplayName))
 	setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is ready")
 	setEndpointCondition(&status, gameServer.Generation, true)
-	if definition.Workload.SupportsMods {
+	if managesMods(definition) {
 		setCondition(&status, gameServer.Generation, conditionMods, metav1.ConditionTrue, "ModsInstalled", fmt.Sprintf("Enabled %s mod selection was installed by the available workload", definition.DisplayName))
 	}
 	return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
@@ -628,7 +660,7 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 	if err != nil {
 		return nil, err
 	}
-	env, err := environment(definition, configuration, runtimeSecretName(gameServer, secretRevision))
+	env, err := environment(definition, configuration, runtimeSecretName(gameServer, secretRevision), gameServer)
 	if err != nil {
 		return nil, err
 	}
@@ -1108,7 +1140,7 @@ func containerPorts(definition games.GameDefinition) []corev1.ContainerPort {
 	return ports
 }
 
-func environment(definition games.GameDefinition, configuration json.RawMessage, runtimeSecretName string) ([]corev1.EnvVar, error) {
+func environment(definition games.GameDefinition, configuration json.RawMessage, runtimeSecretName string, gameServer *plexusv1alpha1.GameServer) ([]corev1.EnvVar, error) {
 	values := maps.Clone(definition.DefaultEnv)
 	if values == nil {
 		values = map[string]string{}
@@ -1119,6 +1151,16 @@ func environment(definition games.GameDefinition, configuration json.RawMessage,
 	}
 	for name, value := range fromConfig {
 		values[name] = value
+	}
+	if definition.Workload.WorkshopStartup {
+		var release *zomboid.ModRelease
+		if setup := gameServer.Spec.SelectedSetup; setup != nil && len(setup.Mods) == 1 {
+			decoded := workshopRelease(setup.Mods[0])
+			release = &decoded
+		}
+		for name, value := range zomboid.RuntimeWorkshopEnv(release) {
+			values[name] = value
+		}
 	}
 	names := make([]string, 0, len(values))
 	for name := range values {

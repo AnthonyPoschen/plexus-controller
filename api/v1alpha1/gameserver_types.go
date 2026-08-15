@@ -99,14 +99,17 @@ type SelectedSetupSpec struct {
 	Configuration GameConfiguration `json:"configuration"`
 
 	// Mods is the provider-validated enabled selection for the next runtime.
-	// The backend stages each immutable artifact; customers cannot provide an
-	// archive reference, URL, filename, or filesystem path directly.
+	// Artifact-backed adapters stage an immutable archive; Steam Workshop
+	// adapters carry only provider identity and load IDs. Customers cannot
+	// provide a URL, filename, or filesystem path directly.
 	// +kubebuilder:validation:MaxItems=1
 	Mods []ModSpec `json:"mods,omitempty"`
 }
 
-// ModSpec identifies one provider release and its backend-staged immutable
-// archive. All filesystem interpretation remains owned by the game adapter.
+// ModSpec identifies one provider release. Artifact fields are required only
+// for archive-backed adapters. Steam Workshop selections leave them empty and
+// rely on startup download. All filesystem interpretation remains owned by the
+// game adapter.
 type ModSpec struct {
 	ProviderID      string   `json:"providerID"`
 	ProviderModID   string   `json:"providerModID"`
@@ -114,6 +117,7 @@ type ModSpec struct {
 	Version         string   `json:"version"`
 	GameVersion     string   `json:"gameVersion"`
 	Dependencies    []string `json:"dependencies"`
+	LoadIDs         []string `json:"loadIDs,omitempty"`
 	ArchiveFileName string   `json:"archiveFileName"`
 	ArchiveSHA256   string   `json:"archiveSHA256"`
 	ArtifactRef     string   `json:"artifactRef"`

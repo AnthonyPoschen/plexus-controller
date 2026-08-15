@@ -132,8 +132,8 @@
     },
     {
       "id": "mods",
-      "released": false,
-      "description": "Workshop mod management is not released for Project Zomboid."
+      "released": true,
+      "description": "Native Steam Workshop discovery and startup-applied Project Zomboid mods."
     },
     {
       "id": "saves",
@@ -183,19 +183,19 @@
     "maximumEntries": 0
   },
   "mods": {
-    "providerID": "",
-    "providerName": "",
-    "providerURL": "",
-    "released": false,
-    "nativeDiscovery": false,
-    "directReference": false,
-    "dependencyResolution": "",
-    "versionSelection": "",
-    "compatibility": "",
-    "applyPolicy": "",
+    "providerID": "steam-workshop",
+    "providerName": "Steam Workshop",
+    "providerURL": "https://steamcommunity.com/app/108600/workshop/",
+    "released": true,
+    "nativeDiscovery": true,
+    "directReference": true,
+    "dependencyResolution": "workshop-children",
+    "versionSelection": "latest",
+    "compatibility": "workshop-app",
+    "applyPolicy": "next-start",
     "requiresStopped": true,
     "automaticRestart": false,
-    "clientSynchronization": ""
+    "clientSynchronization": "restart-required"
   },
   "broadcast": {
     "released": false,

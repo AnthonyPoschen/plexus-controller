@@ -17,8 +17,11 @@ func TestSchemaRegistryIncludesReleasedAdapters(t *testing.T) {
 	if !ok || zomboidSchema.Version != zomboid.SchemaVersion {
 		t.Fatalf("Project Zomboid schema = %#v ok=%t", zomboidSchema, ok)
 	}
-	if zomboidSchema.Saves.ExportReleased || zomboidSchema.Saves.ImportReleased || zomboidSchema.Mods.Released {
-		t.Fatalf("Project Zomboid advertised unreleased save or mod surfaces: %#v %#v", zomboidSchema.Saves, zomboidSchema.Mods)
+	if zomboidSchema.Saves.ExportReleased || zomboidSchema.Saves.ImportReleased {
+		t.Fatalf("Project Zomboid advertised unreleased save surfaces: %#v", zomboidSchema.Saves)
+	}
+	if !zomboidSchema.Mods.Released || zomboidSchema.Mods.ProviderID != zomboid.ModProviderID || zomboidSchema.Mods.AutomaticRestart {
+		t.Fatalf("Project Zomboid Workshop contract = %#v", zomboidSchema.Mods)
 	}
 }
 

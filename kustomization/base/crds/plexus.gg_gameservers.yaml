@@ -142,12 +142,15 @@ spec:
                   mods:
                     description: |-
                       Mods is the provider-validated enabled selection for the next runtime.
-                      The backend stages each immutable artifact; customers cannot provide an
-                      archive reference, URL, filename, or filesystem path directly.
+                      Artifact-backed adapters stage an immutable archive; Steam Workshop
+                      adapters carry only provider identity and load IDs. Customers cannot
+                      provide a URL, filename, or filesystem path directly.
                     items:
                       description: |-
-                        ModSpec identifies one provider release and its backend-staged immutable
-                        archive. All filesystem interpretation remains owned by the game adapter.
+                        ModSpec identifies one provider release. Artifact fields are required only
+                        for archive-backed adapters. Steam Workshop selections leave them empty and
+                        rely on startup download. All filesystem interpretation remains owned by the
+                        game adapter.
                       properties:
                         archiveFileName:
                           type: string
@@ -161,6 +164,10 @@ spec:
                           type: array
                         gameVersion:
                           type: string
+                        loadIDs:
+                          items:
+                            type: string
+                          type: array
                         name:
                           type: string
                         providerID:

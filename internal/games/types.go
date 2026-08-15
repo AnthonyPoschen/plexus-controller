@@ -67,6 +67,7 @@ type WorkloadSpec struct {
 	Config           ConfigRuntime
 	SecretEnvKeys    []string
 	SupportsMods     bool
+	WorkshopStartup  bool
 	AdditionalMounts []VolumeMount
 }
 
@@ -235,7 +236,8 @@ var Registry = map[string]GameDefinition{
 				InitName:        "zomboid-config-init",
 				InitCopyCommand: "mkdir -p /home/steam/Zomboid/Server && cp /plexus/config/server.ini /home/steam/Zomboid/Server/" + zomboid.ConfigIdentity + ".ini",
 			},
-			SecretEnvKeys: []string{"ADMIN_PASSWORD", "RCON_PASSWORD", "SERVER_PASSWORD"},
+			SecretEnvKeys:   []string{"ADMIN_PASSWORD", "RCON_PASSWORD", "SERVER_PASSWORD"},
+			WorkshopStartup: true,
 			AdditionalMounts: []VolumeMount{
 				{Name: "game-data", MountPath: "/home/steam/ZomboidDedicatedServer", SubPath: "install"},
 			},
