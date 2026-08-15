@@ -11,6 +11,7 @@ on:
       - ".github/workflows/factorio-image.yml"
       - "go.mod"
       - "go.sum"
+      - "vendor/**"
   pull_request:
     paths:
       - "cmd/game-supervisor/**"
@@ -20,6 +21,7 @@ on:
       - ".github/workflows/factorio-image.yml"
       - "go.mod"
       - "go.sum"
+      - "vendor/**"
   workflow_dispatch:
 
 env:

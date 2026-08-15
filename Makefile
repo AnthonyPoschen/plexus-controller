@@ -49,21 +49,21 @@ fmt: ## Run go fmt against code.
 
 .PHONY: vet
 vet: ## Run go vet against code.
-	go vet ./...
+	go vet -mod=vendor ./...
 
 .PHONY: test
 test: fmt vet ## Run tests (generation is done via go:generate).
-	go test ./... -coverprofile cover.out
+	go test -mod=vendor ./... -coverprofile cover.out
 
 ##@ Build
 
 .PHONY: build
 build: generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/manager/main.go
+	go build -mod=vendor -o bin/manager cmd/manager/main.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/manager/main.go
+	go run -mod=vendor ./cmd/manager/main.go
 
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.

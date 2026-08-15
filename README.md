@@ -69,7 +69,7 @@ local envtest binaries are installed:
 ```bash
 go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 export KUBEBUILDER_ASSETS="$(setup-envtest use -p path 1.36.x!)"
-go test ./internal/controller -run TestFactorioRunningStoppedEnvtest -count=1
+go test -mod=vendor ./internal/controller -run TestFactorioRunningStoppedEnvtest -count=1
 ```
 
 The scenario installs the generated `GameServer` CRD into envtest, reconciles a
