@@ -42,7 +42,7 @@ func Schema() model.ManagementSchema {
 		},
 		Capabilities: []model.Capability{
 			{ID: "configuration", Released: true, Description: "Tailored server settings backed by the typed Project Zomboid configuration."},
-			{ID: "mods", Released: false, Description: "Workshop mod management is not released for Project Zomboid."},
+			{ID: "mods", Released: true, Description: "Native Steam Workshop discovery and startup-applied Project Zomboid mods."},
 			{ID: "saves", Released: false, Description: "Hosted save import and export are not released for Project Zomboid."},
 			{ID: "console", Released: false, Description: "Interactive Project Zomboid administration is not released."},
 			{ID: "logs", Released: true, Description: "Read-only live container output."},
@@ -52,6 +52,6 @@ func Schema() model.ManagementSchema {
 		}},
 		Shutdown: model.ShutdownPolicy{Strategy: "process-signal", TimeoutSeconds: 120, ForceSupported: true},
 		Saves:    model.SavePolicy{RequiresStopped: true, DestructiveImport: true, LeavesServerStopped: true},
-		Mods:     model.ModProviderPolicy{RequiresStopped: true, AutomaticRestart: false},
+		Mods:     ModProviderPolicy(),
 	}
 }

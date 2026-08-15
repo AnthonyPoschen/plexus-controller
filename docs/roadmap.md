@@ -138,8 +138,10 @@ Exit criteria:
 
 Project Zomboid is the second released runtime adapter. It shares the generic
 GameServer contract for workload, configuration, secrets, graceful shutdown,
-endpoint, and status. Only configuration and live container logs are released;
-mods, saves, and console stay adapter-gated.
+endpoint, and status. Configuration, native Steam Workshop mods, and live
+container logs are released; saves and console stay adapter-gated. Workshop
+updates apply during the next startup through SteamCMD and never restart a
+GameServer automatically.
 
 - Expand `GameRuntimeProfile` coverage for all supported games.
 - Game-specific probes, graceful shutdown, backup hooks, mod loading behavior.

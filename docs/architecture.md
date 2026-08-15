@@ -14,9 +14,9 @@ The `GameServer` CR is the narrow contract between the two.
 The first Factorio management release exposes configuration, native mod
 discovery, save import/export, interactive RCON, and live container logs.
 The Factorio file log channel remains unreleased. Project Zomboid is the
-second adapter: configuration, process-signal graceful shutdown, and live
-container logs are released. Workshop mods, save transfer, and interactive
-console remain unreleased.
+second adapter: configuration, native Steam Workshop mods, process-signal
+graceful shutdown, and live container logs are released. Save transfer and
+interactive console remain unreleased.
 
 One stable `GameServer` always represents one customer Server. Clearing its
 selected setup unloads it without deleting the resource or retained setup data;
@@ -58,6 +58,11 @@ an unloaded Server is valid only with `spec.desiredPower: Stopped`.
   declares a chat broadcast channel so the backend can preview and send a
   safe, attributed maintenance notice over RCON without changing desired
   power.
+- Project Zomboid Workshop selections do not stage archives. The controller
+  passes `MOD_WORKSHOP_IDS` and `MOD_NAMES` into the dedicated-server image so
+  SteamCMD downloads and updates those items during startup. Detected
+  Workshop updates never increment restart generation. The adapter policy is
+  next-start; a client/server mismatch may require Restart.
   - On session end the controller tears down the editor pod.
 - This prevents live filesystem races, open file handle problems, and accidental corruption.
 
@@ -279,7 +284,10 @@ configuration and secrets, management form schema, capability release flags,
 runtime channels, shutdown policy, save-archive validation, and mod-provider
 policy. Project Zomboid's contract is `pkg/gamemanagement/projectzomboid/v1`
 and uses the same registry so backend management code does not grow a second
-game-specific configuration path.
+game-specific configuration path. Its released Workshop adapter declares
+native discovery, direct Workshop ID/URL fallback, required-item
+dependencies, next-start apply, and restart-required client
+synchronization.
 
 Serialized schemas are compatibility surfaces. Adapter changes must update the
 controller golden serialization test and use a new versioned package for
