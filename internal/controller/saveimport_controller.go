@@ -100,11 +100,11 @@ func (r *SaveImportReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 		return ctrl.Result{RequeueAfter: max(time.Second, replacement.Spec.ExpiresAt.Sub(now))}, nil
 	}
 	if !replacement.Spec.ExpiresAt.After(now) {
-		return ctrl.Result{}, r.finish(ctx, &replacement, plexusv1.SaveImportExpired, "expired", "The save replacement authorization expired before completion")
+		return ctrl.Result{}, r.finish(ctx, &replacement, plexusv1.SaveImportExpired, "expired", "none", "The save replacement authorization expired before completion")
 	}
 	definition, err := r.authorize(ctx, &replacement, now)
 	if err != nil {
-		return ctrl.Result{}, r.finish(ctx, &replacement, plexusv1.SaveImportFailed, "authorization", err.Error())
+		return ctrl.Result{}, r.finish(ctx, &replacement, plexusv1.SaveImportFailed, "authorization", "none", err.Error())
 	}
 
 	var job batchv1.Job
@@ -124,23 +124,26 @@ func (r *SaveImportReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 		return ctrl.Result{}, err
 	}
 	if metav1.IsControlledBy(&job, &replacement) == false {
-		return ctrl.Result{}, r.finish(ctx, &replacement, plexusv1.SaveImportFailed, "cleanup", "A same-name Job has different ownership; it was left untouched")
+		return ctrl.Result{}, r.finish(ctx, &replacement, plexusv1.SaveImportFailed, "cleanup", "none", "A same-name Job has different ownership; it was left untouched")
 	}
 	if job.Status.Succeeded > 0 {
 		result, found := r.jobTerminationResult(ctx, &job)
 		if found == false || result.Stage != "complete" || result.ArchiveBytes <= 0 {
-			return ctrl.Result{}, r.finish(ctx, &replacement, plexusv1.SaveImportFailed, "observation", "The importer completed without valid archive size metadata. Plexus did not create an automatic recovery snapshot.")
+			return ctrl.Result{}, r.finish(ctx, &replacement, plexusv1.SaveImportFailed, "observation", "none", "The importer completed without valid archive size metadata. Recovery status is unknown.")
 		}
 		replacement.Status.ArchiveBytes = result.ArchiveBytes
-		return ctrl.Result{}, r.finish(ctx, &replacement, plexusv1.SaveImportSucceeded, "complete", "The hosted save was replaced. The Server remains stopped.")
+		recovery := result.Recovery
+		if recovery == "" {
+			recovery = "snapshot-created"
+		}
+		return ctrl.Result{}, r.finish(ctx, &replacement, plexusv1.SaveImportSucceeded, "complete", recovery, "The hosted save was replaced. A recovery snapshot of the previous save is retained. The Server remains stopped.")
 	}
 	if job.Status.Failed > 0 {
 		result, found := r.jobTerminationResult(ctx, &job)
 		if found == false || validImportFailureStage(result.Stage) == false {
-			return ctrl.Result{}, r.finish(ctx, &replacement, plexusv1.SaveImportFailed, "job", "The hosted save replacement failed. Plexus did not create an automatic recovery snapshot.")
+			return ctrl.Result{}, r.finish(ctx, &replacement, plexusv1.SaveImportFailed, "job", "none", "The hosted save replacement failed before a recovery outcome was recorded.")
 		}
-		message := fmt.Sprintf("Save replacement failed during %s: %s Plexus did not create an automatic recovery snapshot.", result.Stage, result.Message)
-		return ctrl.Result{}, r.finish(ctx, &replacement, plexusv1.SaveImportFailed, result.Stage, boundedDiagnostic(message))
+		return ctrl.Result{}, r.finish(ctx, &replacement, plexusv1.SaveImportFailed, result.Stage, importFailureRecovery(result), boundedDiagnostic(importFailureMessage(result)))
 	}
 	if replacement.Status.Phase != plexusv1.SaveImportRunning {
 		startedAt := metav1.NewTime(now)
@@ -195,20 +198,71 @@ func (r *SaveImportReconciler) observeProgress(ctx context.Context, replacement 
 func importProgressMessage(progress exporterProgress) string {
 	switch progress.Stage {
 	case "download":
-		if progress.ProgressPercent < 40 {
+		if progress.ProgressPercent < 25 {
 			return "Downloading the uploaded save archive"
 		}
 		return "The uploaded save archive was downloaded"
 	case "validation":
 		return "Validating the uploaded save archive"
+	case "snapshot":
+		if progress.ProgressPercent < 60 {
+			return "Creating an automatic recovery snapshot of the hosted save"
+		}
+		return "The automatic recovery snapshot is ready"
 	case "replace":
-		if progress.ProgressPercent < 95 {
+		if progress.ProgressPercent < 85 {
 			return "Replacing the hosted save archive"
 		}
 		return "The hosted save replacement is finalizing"
+	case "rollback":
+		return "Restoring the previous hosted save from the recovery snapshot"
 	default:
 		return "The save replacement is running"
 	}
+}
+
+func importFailureRecovery(result exporterTermination) string {
+	switch result.Recovery {
+	case "snapshot-created", "restored", "rollback-failed", "none":
+		return result.Recovery
+	}
+	switch result.Stage {
+	case "replace":
+		return "restored"
+	case "rollback":
+		return "rollback-failed"
+	default:
+		return "none"
+	}
+}
+
+func importFailureMessage(result exporterTermination) string {
+	if importDiagnosticMentionsRecovery(result.Message) {
+		return fmt.Sprintf("Save replacement failed during %s: %s", result.Stage, result.Message)
+	}
+	switch result.Recovery {
+	case "restored":
+		return fmt.Sprintf("Save replacement failed during %s: %s The previous hosted save was restored from the automatic recovery snapshot.", result.Stage, result.Message)
+	case "rollback-failed":
+		return fmt.Sprintf("Save replacement failed during %s: %s Automatic rollback failed; a recoverable safety snapshot is retained.", result.Stage, result.Message)
+	case "snapshot-created":
+		return fmt.Sprintf("Save replacement failed during %s: %s A recovery snapshot of the previous save is retained.", result.Stage, result.Message)
+	}
+	switch result.Stage {
+	case "snapshot":
+		return fmt.Sprintf("Save replacement failed during snapshot: %s The hosted save was not replaced.", result.Message)
+	case "replace":
+		return fmt.Sprintf("Save replacement failed during replace: %s The previous hosted save was restored from the automatic recovery snapshot.", result.Message)
+	case "rollback":
+		return fmt.Sprintf("Save replacement failed during rollback: %s Automatic rollback failed; a recoverable safety snapshot is retained.", result.Message)
+	default:
+		return fmt.Sprintf("Save replacement failed during %s: %s Plexus did not create an automatic recovery snapshot.", result.Stage, result.Message)
+	}
+}
+
+func importDiagnosticMentionsRecovery(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "snapshot") || strings.Contains(lower, "restored") || strings.Contains(lower, "rollback")
 }
 
 func (r *SaveImportReconciler) authorize(ctx context.Context, replacement *plexusv1.SaveImport, now time.Time) (games.GameDefinition, error) {
@@ -268,6 +322,7 @@ func (r *SaveImportReconciler) jobFor(replacement *plexusv1.SaveImport, definiti
 			{Name: "PLEXUS_SAVE_TARGET_LAYOUT", Value: string(definition.SaveImport.TargetLayout)},
 			{Name: "PLEXUS_SAVE_REPLACEMENT", Value: string(definition.SaveImport.Replacement)},
 			{Name: "PLEXUS_ARCHIVE_NAME", Value: replacement.Spec.ArchiveName},
+			{Name: "PLEXUS_SAVE_IMPORT_ID", Value: replacement.Name},
 		},
 		SecurityContext: &corev1.SecurityContext{RunAsNonRoot: &runAsNonRoot, ReadOnlyRootFilesystem: &readOnlyRoot, AllowPrivilegeEscalation: &allowPrivilegeEscalation, Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
 		Resources:       corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("25m"), corev1.ResourceMemory: resource.MustParse("64Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("512Mi")}},
@@ -283,13 +338,14 @@ func (r *SaveImportReconciler) jobFor(replacement *plexusv1.SaveImport, definiti
 	return job
 }
 
-func (r *SaveImportReconciler) finish(ctx context.Context, replacement *plexusv1.SaveImport, phase plexusv1.SaveImportPhase, stage string, message string) error {
+func (r *SaveImportReconciler) finish(ctx context.Context, replacement *plexusv1.SaveImport, phase plexusv1.SaveImportPhase, stage string, recovery string, message string) error {
 	finishedAt := metav1.NewTime(time.Now().UTC())
 	if r.Now != nil {
 		finishedAt = metav1.NewTime(r.Now().UTC())
 	}
 	replacement.Status.Phase = phase
 	replacement.Status.Stage = stage
+	replacement.Status.Recovery = recovery
 	replacement.Status.Message = boundedDiagnostic(message)
 	replacement.Status.FinishedAt = &finishedAt
 	if phase == plexusv1.SaveImportSucceeded {

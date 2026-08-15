@@ -86,6 +86,15 @@ spec:
               message:
                 maxLength: 512
                 type: string
+              recovery:
+                description: Recovery is a bounded recovery outcome, never a filesystem
+                  path.
+                enum:
+                - none
+                - snapshot-created
+                - restored
+                - rollback-failed
+                type: string
               phase:
                 enum:
                 - Pending
