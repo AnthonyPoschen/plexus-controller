@@ -367,7 +367,15 @@ func (r *SaveExportReconciler) jobTerminationResult(ctx context.Context, job *ba
 }
 
 func validFailureStage(stage string) bool {
+	return validExportFailureStage(stage) || validImportFailureStage(stage)
+}
+
+func validExportFailureStage(stage string) bool {
 	return stage == "archive" || stage == "validation" || stage == "upload"
+}
+
+func validImportFailureStage(stage string) bool {
+	return stage == "download" || stage == "validation" || stage == "replace"
 }
 
 func boundedDiagnostic(message string) string {

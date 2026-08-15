@@ -70,6 +70,7 @@ rules:
   resources:
   - gameservers
   - saveexports
+  - saveimports
   verbs:
   - get
   - list
@@ -81,6 +82,7 @@ rules:
   resources:
   - gameservers/finalizers
   - saveexports/finalizers
+  - saveimports/finalizers
   verbs:
   - update
 - apiGroups:
@@ -88,6 +90,7 @@ rules:
   resources:
   - gameservers/status
   - saveexports/status
+  - saveimports/status
   verbs:
   - get
   - patch

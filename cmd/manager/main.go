@@ -84,6 +84,15 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "SaveExport")
 		os.Exit(1)
 	}
+	if err := (&controller.SaveImportReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		ImporterImage: os.Getenv("PLEXUS_SAVE_IMPORTER_IMAGE"),
+		Progress:      controller.NewPodLogProgressReaderFor(kubernetesClient.CoreV1(), "save-importer"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "SaveImport")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
