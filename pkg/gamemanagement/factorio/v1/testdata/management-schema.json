@@ -251,7 +251,7 @@
   "capabilities": [
     {
       "id": "configuration",
-      "released": false,
+      "released": true,
       "description": "Tailored server settings backed by the typed Factorio configuration."
     },
     {
@@ -266,7 +266,7 @@
     },
     {
       "id": "console",
-      "released": false,
+      "released": true,
       "description": "Interactive Factorio administration over RCON."
     },
     {
@@ -287,7 +287,7 @@
         "label": "Game console",
         "interaction": "interactive",
         "protocol": "rcon",
-        "released": false
+        "released": true
       },
       {
         "id": "container-stdout",
@@ -337,7 +337,7 @@
     "providerName": "Factorio Mod Portal",
     "providerURL": "https://mods.factorio.com",
     "released": true,
-    "nativeDiscovery": false,
+    "nativeDiscovery": true,
     "directReference": true,
     "dependencyResolution": "provider-metadata",
     "versionSelection": "latest-compatible",
