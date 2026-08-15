@@ -16,6 +16,12 @@ func Schema() model.ManagementSchema {
 		DisplayName: "Factorio",
 		Configuration: model.ConfigurationSchema{Sections: []model.Section{
 			{
+				ID: "channel", Title: "Game channel",
+				Fields: []model.Field{
+					{Path: "channel", Label: "Channel", Description: "Update to the latest Factorio dedicated-server build of this channel when the container boots. Saves and mods stay on the hosted world volume.", Type: model.FieldTypeString, Required: true, Default: defaults.Channel, Options: []model.Option{{Value: ChannelStable, Label: "Stable"}, {Value: ChannelExperimental, Label: "Experimental"}}},
+				},
+			},
+			{
 				ID: "identity", Title: "Server details",
 				Fields: []model.Field{
 					{Path: "name", Label: "Server name", Description: "Name shown in the Factorio multiplayer browser.", Type: model.FieldTypeString, Required: true, Default: defaults.Name, Constraints: constraints(model.Constraints{MinLength: integer(minimumNameLength), MaxLength: integer(maximumNameLength)})},

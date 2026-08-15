@@ -18,8 +18,9 @@ const (
 	ModProviderID            = "factorio-mod-portal"
 	SupportedFactorioVersion = "2.0"
 	SupportedRuntimeVersion  = "2.0.77"
-	// RuntimeImage is the Plexus-owned Factorio supervisor image pinned to the
-	// supported dedicated-server patch.
+	// RuntimeImage is the Plexus-owned Factorio supervisor image. The tag is
+	// the seed dedicated-server patch shipped in the image; boot updates to
+	// the selected channel's latest build.
 	RuntimeImage             = "ghcr.io/anthonyposchen/plexus-factorio:" + SupportedRuntimeVersion
 	ModApplyPolicyNextStart  = "next-start"
 	ModClientSyncJoinTime    = "join-time"

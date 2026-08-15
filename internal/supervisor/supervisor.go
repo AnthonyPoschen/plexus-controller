@@ -24,6 +24,11 @@ type Adapter interface {
 	GracePeriod() time.Duration
 }
 
+// BootUpdater optionally updates game files once before the first process start.
+type BootUpdater interface {
+	UpdateOnBoot(ctx context.Context) error
+}
+
 // Supervisor is PID 1 for a Plexus-owned game image. It boots the adapter's
 // process from disk, recovers unexpected exits in-pod, and runs graceful stop
 // on context cancellation (SIGTERM).
@@ -47,6 +52,17 @@ func (s Supervisor) Run(ctx context.Context) error {
 	delay := s.RecoverDelay
 	if delay <= 0 {
 		delay = defaultRecoverDelay
+	}
+
+	if updater, ok := s.Adapter.(BootUpdater); ok {
+		s.log("updating %s game files", s.Adapter.Name())
+		if err := updater.UpdateOnBoot(ctx); err != nil {
+			if ctx.Err() != nil {
+				s.log("stop requested during boot update")
+				return nil
+			}
+			return fmt.Errorf("update %s: %w", s.Adapter.Name(), err)
+		}
 	}
 
 	for attempt := 1; ; attempt++ {

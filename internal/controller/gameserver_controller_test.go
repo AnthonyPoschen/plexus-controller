@@ -1375,6 +1375,9 @@ func TestFactorioReconcileRendersCustomConfigurationAndSecretBackedEnvironment(t
 	var deployment appsv1.Deployment
 	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
 	container := deployment.Spec.Template.Spec.Containers[0]
+	if env := findEnvironment(container.Env, factorio.ChannelEnv); env == nil || env.Value != factorio.ChannelStable {
+		t.Fatalf("default Factorio channel environment = %#v", env)
+	}
 	for _, name := range []string{"USERNAME", "TOKEN", "GAME_PASSWORD", "RCON_PASSWORD"} {
 		environment := findEnvironment(container.Env, name)
 		if environment == nil || environment.Value != "" || environment.ValueFrom == nil || environment.ValueFrom.SecretKeyRef == nil ||
@@ -1391,6 +1394,22 @@ func TestFactorioReconcileRendersCustomConfigurationAndSecretBackedEnvironment(t
 		if strings.Contains(exposed, sensitive) {
 			t.Fatal("a sensitive fixture was exposed outside a Secret")
 		}
+	}
+}
+
+func TestFactorioChannelDesiredStateReachesSupervisorEnvironment(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	gameServer.Spec.SelectedSetup.Configuration.Values.Raw = []byte(`{"channel":"experimental","name":"Copper Works"}`)
+	reconciler, kubeClient := testReconciler(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	env := findEnvironment(deployment.Spec.Template.Spec.Containers[0].Env, factorio.ChannelEnv)
+	if env == nil || env.Value != factorio.ChannelExperimental {
+		t.Fatalf("experimental channel environment = %#v", env)
 	}
 }
 

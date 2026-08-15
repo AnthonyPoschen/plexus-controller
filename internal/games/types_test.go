@@ -24,7 +24,7 @@ func TestFactorioUsesPlexusSupervisorImage(t *testing.T) {
 		t.Fatalf("Factorio image is not the Plexus supervisor image: %q", definition.DefaultImage)
 	}
 	if !strings.HasSuffix(definition.DefaultImage, ":"+factorio.SupportedRuntimeVersion) {
-		t.Fatalf("Factorio image is not pinned to %s: %q", factorio.SupportedRuntimeVersion, definition.DefaultImage)
+		t.Fatalf("Factorio seed image is not tagged %s: %q", factorio.SupportedRuntimeVersion, definition.DefaultImage)
 	}
 	if !definition.Workload.Supervisor {
 		t.Fatal("Factorio workload must run the Plexus supervisor as PID 1")
@@ -38,7 +38,10 @@ func TestFactorioDockerfilePinsSupportedRuntime(t *testing.T) {
 	}
 	want := "FACTORIO_VERSION=" + factorio.SupportedRuntimeVersion
 	if !strings.Contains(string(data), want) {
-		t.Fatalf("Dockerfile.factorio must pin %s", want)
+		t.Fatalf("Dockerfile.factorio must pin seed %s", want)
+	}
+	if !strings.Contains(string(data), "/opt/steamcmd") || !strings.Contains(string(data), "steamcmd_linux.tar.gz") {
+		t.Fatal("Dockerfile.factorio must ship steamcmd so boot can apply channel diffs")
 	}
 	if !strings.Contains(string(data), `ENTRYPOINT ["/usr/local/bin/game-supervisor"]`) {
 		t.Fatal("Dockerfile.factorio must run the game supervisor as PID 1")

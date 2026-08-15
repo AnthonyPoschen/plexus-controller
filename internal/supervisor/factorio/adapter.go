@@ -58,9 +58,24 @@ type Adapter struct {
 	Paths     Paths
 	LookupEnv func(string) (string, bool)
 	Dial      func(ctx context.Context, network, address string) (net.Conn, error)
+	Updater   GameUpdater
 }
 
 func (a Adapter) Name() string { return factoriov1.GameID }
+
+// UpdateOnBoot replaces the image seed with the latest dedicated-server build
+// of the selected channel before the game process starts.
+func (a Adapter) UpdateOnBoot(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	value, present := a.env(factoriov1.ChannelEnv)
+	channel, err := selectedChannel(value, present)
+	if err != nil {
+		return err
+	}
+	return a.updater().Update(ctx, channel)
+}
 
 func (a Adapter) GracePeriod() time.Duration {
 	timeout := factoriov1.Schema().Shutdown.TimeoutSeconds
@@ -174,6 +189,13 @@ func (a Adapter) paths() Paths {
 		paths.RCONPort = defaults.RCONPort
 	}
 	return paths
+}
+
+func (a Adapter) updater() GameUpdater {
+	if a.Updater != nil {
+		return a.Updater
+	}
+	return SteamcmdUpdater{}
 }
 
 func (a Adapter) env(name string) (string, bool) {

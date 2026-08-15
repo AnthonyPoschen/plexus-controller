@@ -7,11 +7,18 @@ COPY vendor ./vendor
 COPY . .
 RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o /game-supervisor ./cmd/game-supervisor
 
-# Game files come from the matching dedicated-server patch. The published
-# runtime replaces that image's entrypoint with the Plexus supervisor.
+# Game files come from a seed dedicated-server patch. Boot updates that seed
+# to the latest build of the selected Steam channel.
 FROM factoriotools/factorio:${FACTORIO_VERSION}
 USER root
 COPY --from=supervisor /game-supervisor /usr/local/bin/game-supervisor
-RUN chmod 0755 /usr/local/bin/game-supervisor
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates curl lib32gcc-s1 \
+	&& mkdir -p /opt/steamcmd \
+	&& curl -fsSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
+		| tar -xz -C /opt/steamcmd \
+	&& chown -R factorio:factorio /opt/steamcmd /opt/factorio \
+	&& chmod 0755 /usr/local/bin/game-supervisor /opt/steamcmd/steamcmd.sh \
+	&& rm -rf /var/lib/apt/lists/*
 USER factorio
 ENTRYPOINT ["/usr/local/bin/game-supervisor"]

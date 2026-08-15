@@ -31,9 +31,14 @@ const (
 	maximumGamePasswordLength = 128
 	minimumRCONPasswordLength = 16
 	maximumRCONPasswordLength = 128
+
+	ChannelStable       = "stable"
+	ChannelExperimental = "experimental"
+	ChannelEnv          = "FACTORIO_CHANNEL"
 )
 
 type Configuration struct {
+	Channel                 string     `json:"channel"`
 	Name                    string     `json:"name"`
 	Description             string     `json:"description,omitempty"`
 	Tags                    []string   `json:"tags,omitempty"`
@@ -68,6 +73,7 @@ type Secrets struct {
 
 func DefaultConfiguration() Configuration {
 	return Configuration{
+		Channel:                 ChannelStable,
 		Name:                    "Plexus Factorio Server",
 		MaxPlayers:              0,
 		Visibility:              Visibility{Public: true, LAN: true},
@@ -121,7 +127,19 @@ func strictDecode(data []byte, target any) error {
 	return nil
 }
 
+func ValidateChannel(channel string) error {
+	switch strings.TrimSpace(channel) {
+	case ChannelStable, ChannelExperimental:
+		return nil
+	default:
+		return fmt.Errorf("Factorio channel must be %s or %s", ChannelStable, ChannelExperimental)
+	}
+}
+
 func (configuration Configuration) Validate() error {
+	if err := ValidateChannel(configuration.Channel); err != nil {
+		return err
+	}
 	if strings.TrimSpace(configuration.Name) == "" || len(configuration.Name) > maximumNameLength {
 		return fmt.Errorf("Factorio name must contain %d to %d characters", minimumNameLength, maximumNameLength)
 	}

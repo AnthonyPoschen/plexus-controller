@@ -76,6 +76,39 @@ func TestCommandBootsLatestHostedSaveWithMergedSecrets(t *testing.T) {
 	}
 }
 
+func TestUpdateOnBootAppliesSelectedChannel(t *testing.T) {
+	updater := &recordingUpdater{}
+	adapter := Adapter{
+		LookupEnv: mapEnv(map[string]string{factoriov1.ChannelEnv: factoriov1.ChannelExperimental}),
+		Updater:   updater,
+	}
+	if err := adapter.UpdateOnBoot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if updater.calls != 1 || updater.channel != factoriov1.ChannelExperimental {
+		t.Fatalf("boot updater = %#v", updater)
+	}
+
+	adapter.LookupEnv = mapEnv(nil)
+	if err := adapter.UpdateOnBoot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if updater.calls != 2 || updater.channel != factoriov1.ChannelStable {
+		t.Fatalf("default boot updater = %#v", updater)
+	}
+}
+
+type recordingUpdater struct {
+	calls   int
+	channel string
+}
+
+func (u *recordingUpdater) Update(_ context.Context, channel string) error {
+	u.calls++
+	u.channel = channel
+	return nil
+}
+
 func TestCommandRequiresHostedSaveAndRCONPassword(t *testing.T) {
 	paths := testPaths(t)
 	writeSettings(t, paths.SettingsFile, `{"name":"Copper Works"}`)

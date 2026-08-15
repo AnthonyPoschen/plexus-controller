@@ -65,6 +65,86 @@ func (a *stubAdapter) startCount() int {
 	return a.starts
 }
 
+type updatingAdapter struct {
+	stubAdapter
+	updates   int
+	updateErr error
+}
+
+func (a *updatingAdapter) UpdateOnBoot(context.Context) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.updates++
+	return a.updateErr
+}
+
+func (a *updatingAdapter) updateCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.updates
+}
+
+func TestRunUpdatesGameFilesOncePerBoot(t *testing.T) {
+	adapter := &updatingAdapter{stubAdapter: stubAdapter{failFor: 1}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Supervisor{Adapter: adapter, MaxProcessRecoveries: 1, RecoverDelay: time.Millisecond, Output: io.Discard}.Run(ctx)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for adapter.startCount() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if adapter.startCount() < 2 {
+		cancel()
+		t.Fatalf("starts = %d, want recovered second start", adapter.startCount())
+	}
+	if adapter.updateCount() != 1 {
+		cancel()
+		t.Fatalf("boot updates = %d, want 1 before recoveries", adapter.updateCount())
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("graceful stop after boot update = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("supervisor did not exit after graceful stop")
+	}
+
+	second := &updatingAdapter{}
+	if err := (Supervisor{Adapter: second, RecoverDelay: time.Millisecond, Output: io.Discard}).Run(cancelledContext()); err != nil {
+		t.Fatalf("second boot = %v", err)
+	}
+	if second.updateCount() != 1 {
+		t.Fatalf("later boot updates = %d, want 1", second.updateCount())
+	}
+}
+
+func TestRunBootUpdateFailurePreventsStart(t *testing.T) {
+	adapter := &updatingAdapter{updateErr: errBootUpdate}
+	err := Supervisor{Adapter: adapter, RecoverDelay: time.Millisecond, Output: io.Discard}.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "update stub") {
+		t.Fatalf("boot update failure = %v", err)
+	}
+	if adapter.startCount() != 0 {
+		t.Fatalf("starts = %d after failed boot update", adapter.startCount())
+	}
+}
+
+func cancelledContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+var errBootUpdate = errString("seed must not remain pinned")
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
+
 func TestRunRestartsThenExitsForReschedule(t *testing.T) {
 	adapter := &stubAdapter{failFor: 100}
 	err := Supervisor{Adapter: adapter, MaxProcessRecoveries: 2, RecoverDelay: time.Millisecond, Output: io.Discard}.Run(context.Background())
