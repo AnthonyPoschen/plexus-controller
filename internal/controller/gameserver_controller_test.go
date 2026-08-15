@@ -17,6 +17,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -472,6 +473,127 @@ func TestFactorioForceEscalatesAnInProgressGracefulStop(t *testing.T) {
 	}
 	if len(podDeleteGracePeriods) != 1 || podDeleteGracePeriods[0] == nil || *podDeleteGracePeriods[0] != 0 {
 		t.Fatalf("Force escalation Pod grace periods = %#v, want [0]", podDeleteGracePeriods)
+	}
+}
+
+func TestGracefulStopReportsTakingLongerAfterAdapterTimeout(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	reconciler, kubeClient := testReconciler(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	deployment.Finalizers = []string{"test.plexus.gg/hold-deletion"}
+	if err := kubeClient.Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	current.Spec.DesiredPower = plexusv1alpha1.DesiredPowerStopped
+	current.Generation++
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	stopping := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if stopping.Status.Phase != plexusv1alpha1.GameServerPhaseStopping || stopping.Status.Message == takingLongerThanExpected {
+		t.Fatalf("early stop status = %#v", stopping.Status)
+	}
+
+	condition := meta.FindStatusCondition(stopping.Status.Conditions, conditionShutdown)
+	if condition == nil {
+		t.Fatal("missing ShutdownProgress condition")
+	}
+	condition.LastTransitionTime = metav1.NewTime(time.Now().Add(-90 * time.Second))
+	meta.SetStatusCondition(&stopping.Status.Conditions, *condition)
+	stopping.Status.LastObservedAt = &metav1.Time{Time: time.Now().Add(-time.Minute)}
+	if err := kubeClient.Status().Update(ctx, stopping); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcileOnce(t, ctx, reconciler, request)
+	timedOut := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if timedOut.Status.Message != takingLongerThanExpected {
+		t.Fatalf("timed-out stop message = %q", timedOut.Status.Message)
+	}
+	timeoutCondition := meta.FindStatusCondition(timedOut.Status.Conditions, conditionShutdown)
+	if timeoutCondition == nil || timeoutCondition.Reason != "TakingLongerThanExpected" {
+		t.Fatalf("timed-out stop condition = %#v", timeoutCondition)
+	}
+	get(t, ctx, kubeClient, request.NamespacedName, &corev1.PersistentVolumeClaim{})
+	if timedOut.Spec.SelectedSetup == nil || timedOut.Spec.SelectedSetup.ID != "setup-1" {
+		t.Fatalf("timeout path lost selected setup: %#v", timedOut.Spec.SelectedSetup)
+	}
+}
+
+func TestGracefulStopTimeoutSurvivesControllerRecovery(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	var podDeleteGracePeriods []*int64
+	first, kubeClient := testReconcilerWithInterceptors(t, podDeleteInterceptor(&podDeleteGracePeriods), gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, first, request)
+
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	deployment.Finalizers = []string{"test.plexus.gg/hold-deletion"}
+	if err := kubeClient.Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	current.Spec.DesiredPower = plexusv1alpha1.DesiredPowerStopped
+	current.Generation++
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, first, request)
+	if len(podDeleteGracePeriods) != 0 {
+		t.Fatalf("graceful stop force-deleted pods before timeout: %#v", podDeleteGracePeriods)
+	}
+
+	stopping := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	condition := meta.FindStatusCondition(stopping.Status.Conditions, conditionShutdown)
+	if condition == nil {
+		t.Fatal("missing ShutdownProgress condition")
+	}
+	condition.LastTransitionTime = metav1.NewTime(time.Now().Add(-2 * time.Minute))
+	stopping.Status.LastObservedAt = &metav1.Time{Time: time.Now().Add(-time.Minute)}
+	if err := kubeClient.Status().Update(ctx, stopping); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered := &GameServerReconciler{Client: kubeClient, Scheme: first.Scheme}
+	reconcileOnce(t, ctx, recovered, request)
+	timedOut := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if timedOut.Status.Message != takingLongerThanExpected {
+		t.Fatalf("recovered controller timeout message = %q", timedOut.Status.Message)
+	}
+
+	timedOut.Spec.ShutdownMode = plexusv1alpha1.ShutdownModeForce
+	timedOut.Generation++
+	if err := kubeClient.Update(ctx, timedOut); err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "factorio-1-pod", Namespace: timedOut.Namespace, Labels: forceDeletePodLabels(timedOut)}}
+	if err := kubeClient.Create(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, recovered, request)
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(pod), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("recovered Force stop Pod lookup error = %v, want NotFound", err)
+	}
+	if len(podDeleteGracePeriods) != 1 || podDeleteGracePeriods[0] == nil || *podDeleteGracePeriods[0] != 0 {
+		t.Fatalf("recovered Force stop grace periods = %#v", podDeleteGracePeriods)
+	}
+	get(t, ctx, kubeClient, request.NamespacedName, &corev1.PersistentVolumeClaim{})
+	retained := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if retained.Spec.SelectedSetup == nil || retained.Spec.SelectedSetup.ID != "setup-1" {
+		t.Fatalf("recovered Force stop lost selected setup: %#v", retained.Spec.SelectedSetup)
+	}
+	if retained.Status.Message != "Force-stopping the Factorio workload; persistent storage is retained" {
+		t.Fatalf("recovered Force stop message = %q", retained.Status.Message)
 	}
 }
 

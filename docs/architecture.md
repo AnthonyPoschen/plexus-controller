@@ -310,11 +310,14 @@ Running is reported only after the Deployment controller has observed the
 current revision, an updated replica is available, and its public endpoint is
 assigned. Every Factorio pod carries the adapter's `rcon /quit`
 graceful-shutdown hook and 90-second timeout, so current Graceful stop intent is
-not dependent on the mode used when the pod was created. Force stop intent
-deletes UID-bound live pods with zero grace, including escalation of an
-in-progress graceful stop. Pods created before the UID label was introduced are
-not force-deleted; normal Kubernetes ownership cleanup remains responsible for
-them. Restart uses a Recreate rollout so the old game process is shut
+not dependent on the mode used when the pod was created. If that adapter
+timeout elapses while the workload is still terminating, status reports
+`Taking longer than expected` without deleting the GameServer, Service
+identity, selected setup, or PVC. Force stop intent deletes UID-bound live
+pods with zero grace, including escalation of an in-progress graceful stop
+after a controller restart. Pods created before the UID label was introduced
+are not force-deleted; normal Kubernetes ownership cleanup remains responsible
+for them. Restart uses a Recreate rollout so the old game process is shut
 down before its replacement starts. Stopped is reported only after the workload
 and Service are absent. Stable Running and Stopped observations are refreshed
 periodically so the backend can distinguish a healthy unchanged runtime from a
