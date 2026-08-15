@@ -389,6 +389,7 @@ The controller is deployed using the same FluxCD + Kustomize pattern as the back
 
 - CRDs and controller manifests live under `kustomization/base/`
 - Production overlays (image automation, secrets) live under `kustomization/overlays/prod/`
+- The Dev overlay rewrites the generated CRD group and name to `dev.plexus.gg` at apply time and drops the shared `gs` shortName. Cluster-level Flux installs that CRD; tenant service accounts do not.
 - CRDs are generated into `kustomization/base/crds/` via `make manifests`
 
 This allows the controller to be managed by the same GitOps pipeline as the rest of the platform.

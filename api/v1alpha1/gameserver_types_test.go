@@ -75,6 +75,12 @@ func TestGeneratedCRDMatchesGameServerContract(t *testing.T) {
 	if err := yaml.Unmarshal(manifest, &crd); err != nil {
 		t.Fatal(err)
 	}
+	if crd.Name != "gameservers.plexus.gg" || crd.Spec.Group != "plexus.gg" {
+		t.Fatalf("generated CRD must stay production gameservers.plexus.gg, got %s group=%s", crd.Name, crd.Spec.Group)
+	}
+	if !contains(crd.Spec.Names.ShortNames, "gs") {
+		t.Fatalf("generated CRD shortNames = %v, want gs", crd.Spec.Names.ShortNames)
+	}
 	if len(crd.Spec.Versions) != 1 || crd.Spec.Versions[0].Schema == nil {
 		t.Fatalf("unexpected GameServer CRD versions: %#v", crd.Spec.Versions)
 	}
