@@ -43,8 +43,11 @@ The first Factorio tracer now reconciles a Deployment, LoadBalancer Service,
 and persistent volume; reports Starting, Running, Stopping, Stopped, and Failed
 observations with periodic freshness updates; and removes the workload and
 public endpoint while retaining storage on stop. Factorio configuration
-rendering is integrated. Graceful stop and restart use the adapter shutdown
-policy, explicit Force stop bypasses pod grace, and replacement readiness is
+rendering is integrated. The published runtime is the Plexus Factorio
+supervisor image from this repository: the supervisor is PID 1, boots from
+disk, recovers unexpected process exits in-pod, and runs the adapter graceful
+stop on SIGTERM. Desired power Stopped still removes the pod. Explicit Force
+stop bypasses pod grace, and replacement readiness is
 fenced to the new Deployment revision.
 
 The first live runtime-output slice is also released for Factorio: the shared

@@ -68,6 +68,7 @@ type WorkloadSpec struct {
 	SecretEnvKeys    []string
 	SupportsMods     bool
 	WorkshopStartup  bool
+	Supervisor       bool
 	AdditionalMounts []VolumeMount
 }
 
@@ -147,7 +148,7 @@ var Registry = map[string]GameDefinition{
 		ID:                      factorio.GameID,
 		ManagementSchemaVersion: factorio.SchemaVersion,
 		DisplayName:             "Factorio",
-		DefaultImage:            "factoriotools/factorio:" + factorio.SupportedRuntimeVersion,
+		DefaultImage:            factorio.RuntimeImage,
 		MinDiskGiB:              10,
 		RecommendedDiskGiB:      50,
 		RawDiskPaths:            []string{"/saves", "/mods"},
@@ -194,6 +195,7 @@ var Registry = map[string]GameDefinition{
 			},
 			SecretEnvKeys: []string{"GAME_PASSWORD", "RCON_PASSWORD", "TOKEN", "USERNAME"},
 			SupportsMods:  true,
+			Supervisor:    true,
 		},
 	},
 
