@@ -27,6 +27,7 @@ import (
 
 	plexusv1alpha1 "github.com/AnthonyPoschen/plexus-controller/api/v1alpha1"
 	"github.com/AnthonyPoschen/plexus-controller/internal/games"
+	"github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement"
 	factorio "github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/factorio/v1"
 )
 
@@ -42,12 +43,6 @@ const (
 	conditionShutdown          = "ShutdownProgress"
 	takingLongerThanExpected   = "Taking longer than expected"
 	dataVolumeName             = "game-data"
-	dataMountPath              = "/factorio"
-	configVolumeName           = "factorio-config"
-	configSourceName           = "factorio-config-source"
-	configFileName             = "server-settings.json"
-	configMountPath            = "/factorio/config"
-	configSourcePath           = "/plexus/config"
 	modSourceName              = "factorio-mod-source"
 	modSourcePath              = "/plexus/mod"
 	observationRefreshInterval = 30 * time.Second
@@ -94,23 +89,23 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 		return r.reconcileUnloaded(ctx, &gameServer)
 	}
 	definition, err := games.Get(gameServer.Spec.SelectedSetup.GameID)
-	if err != nil || definition.ID != factorio.GameID {
+	if err != nil || definition.Workload.ContainerName == "" {
 		if err == nil {
 			err = fmt.Errorf("game %q does not have a workload reconciler", definition.ID)
 		}
 		return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.reportPermanentFailure(ctx, &gameServer, "UnsupportedGame", err)
 	}
 	if gameServer.Spec.DesiredPower == plexusv1alpha1.DesiredPowerStopped {
-		handled, result, err := r.quiesceBeforeSecretValidation(ctx, &gameServer)
+		handled, result, err := r.quiesceBeforeSecretValidation(ctx, &gameServer, definition)
 		if err != nil || handled {
 			return result, err
 		}
 	}
-	if gameServer.Spec.SelectedSetup.Configuration.SchemaVersion != factorio.SchemaVersion {
-		err := fmt.Errorf("Factorio setup schemaVersion is %q; migrate the setup to supported schema %q", gameServer.Spec.SelectedSetup.Configuration.SchemaVersion, factorio.SchemaVersion)
+	if gameServer.Spec.SelectedSetup.Configuration.SchemaVersion != definition.ManagementSchemaVersion {
+		err := fmt.Errorf("%s setup schemaVersion is %q; migrate the setup to supported schema %q", definition.DisplayName, gameServer.Spec.SelectedSetup.Configuration.SchemaVersion, definition.ManagementSchemaVersion)
 		return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.reportUnobservedFailure(ctx, &gameServer, "ConfigurationMigrationRequired", err)
 	}
-	secrets, secretRevision, err := r.validateSetupSecret(ctx, &gameServer)
+	secretEnv, secretRevision, err := r.validateSetupSecret(ctx, &gameServer, definition)
 	if err != nil {
 		reason := "SetupSecretInvalid"
 		var migrationError *setupSecretMigrationError
@@ -122,14 +117,14 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 		}
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
-	configuration, err := factorio.DecodeConfiguration(gameServer.Spec.SelectedSetup.Configuration.Values.Raw)
+	configuration, err := gamemanagement.NormalizeConfiguration(definition.ID, gameServer.Spec.SelectedSetup.Configuration.Values.Raw)
 	if err != nil {
 		if statusErr := r.reportUnobservedFailure(ctx, &gameServer, "ConfigurationInvalid", err); statusErr != nil {
 			return ctrl.Result{}, statusErr
 		}
 		return ctrl.Result{RequeueAfter: observationRefreshInterval}, nil
 	}
-	if err := r.validateModArtifacts(ctx, &gameServer); err != nil {
+	if err := r.validateModArtifacts(ctx, &gameServer, definition); err != nil {
 		if statusErr := r.reportUnobservedFailure(ctx, &gameServer, "ModArtifactInvalid", err); statusErr != nil {
 			return ctrl.Result{}, statusErr
 		}
@@ -141,12 +136,12 @@ func (r *GameServerReconciler) Reconcile(ctx context.Context, request ctrl.Reque
 	}
 
 	if gameServer.Spec.DesiredPower == plexusv1alpha1.DesiredPowerStopped {
-		return r.reconcileStopped(ctx, &gameServer)
+		return r.reconcileStopped(ctx, &gameServer, definition)
 	}
-	return r.reconcileRunning(ctx, &gameServer, definition, configuration, secrets, secretRevision)
+	return r.reconcileRunning(ctx, &gameServer, definition, configuration, secretEnv, secretRevision)
 }
 
-func (r *GameServerReconciler) quiesceBeforeSecretValidation(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (bool, ctrl.Result, error) {
+func (r *GameServerReconciler) quiesceBeforeSecretValidation(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition) (bool, ctrl.Result, error) {
 	deploymentDeleted, err := r.deleteDeployment(ctx, gameServer)
 	if err != nil {
 		return true, ctrl.Result{}, r.reportUnobservedFailure(ctx, gameServer, "WorkloadStopFailed", err)
@@ -158,52 +153,62 @@ func (r *GameServerReconciler) quiesceBeforeSecretValidation(ctx context.Context
 	if deploymentDeleted == false && serviceDeleted == false {
 		return false, ctrl.Result{}, nil
 	}
-	status := r.stoppingStatus(ctx, gameServer, "Stopping the Factorio workload before validating sensitive configuration")
+	status := r.stoppingStatus(ctx, gameServer, fmt.Sprintf("Stopping the %s workload before validating sensitive configuration", definition.DisplayName))
 	status.ObservedGeneration = gameServer.Status.ObservedGeneration
-	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "WorkloadStopping", "Factorio is being stopped before the replacement setup Secret is acknowledged")
+	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "WorkloadStopping", fmt.Sprintf("%s is being stopped before the replacement setup Secret is acknowledged", definition.DisplayName))
 	if err := r.updateStatus(ctx, gameServer, status); err != nil {
 		return true, ctrl.Result{}, err
 	}
 	return true, ctrl.Result{RequeueAfter: time.Second}, nil
 }
 
-func (r *GameServerReconciler) validateSetupSecret(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (factorio.Secrets, int64, error) {
+func (r *GameServerReconciler) validateSetupSecret(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition) (map[string][]byte, int64, error) {
 	setup := gameServer.Spec.SelectedSetup
+	schema, ok := gamemanagement.Schema(definition.ID)
+	if !ok {
+		return nil, 0, fmt.Errorf("game %q has no management schema", definition.ID)
+	}
 	secret := &corev1.Secret{}
 	key := client.ObjectKey{Namespace: gameServer.Namespace, Name: setup.Configuration.SecretRef.Name}
 	if err := r.Get(ctx, key, secret); err != nil {
-		return factorio.Secrets{}, 0, fmt.Errorf("read referenced setup Secret %q: %w", key.Name, err)
+		return nil, 0, fmt.Errorf("read referenced setup Secret %q: %w", key.Name, err)
 	}
 	if secret.Labels[plexusv1alpha1.LabelServerID] != gameServer.Spec.ServerID ||
 		secret.Labels[plexusv1alpha1.LabelOwnerUserID] != gameServer.Spec.OwnerUserID ||
 		secret.Labels[plexusv1alpha1.LabelGameID] != setup.GameID || secret.Labels[plexusv1alpha1.LabelSetupID] != setup.ID {
-		return factorio.Secrets{}, 0, fmt.Errorf("referenced setup Secret %q has different ownership", key.Name)
+		return nil, 0, fmt.Errorf("referenced setup Secret %q has different ownership", key.Name)
 	}
-	if secret.Annotations[factorio.SecretSchemaAnnotation] != factorio.SecretSchemaVersion {
-		return factorio.Secrets{}, 0, &setupSecretMigrationError{name: key.Name, schemaVersion: secret.Annotations[factorio.SecretSchemaAnnotation]}
+	if secret.Annotations[gamemanagement.SecretSchemaAnnotation] != schema.Secrets.Version {
+		return nil, 0, &setupSecretMigrationError{name: key.Name, schemaVersion: secret.Annotations[gamemanagement.SecretSchemaAnnotation], supported: schema.Secrets.Version}
 	}
-	revision, err := strconv.ParseInt(secret.Annotations[factorio.SecretRevisionAnnotation], 10, 64)
+	revision, err := strconv.ParseInt(secret.Annotations[gamemanagement.SecretRevisionAnnotation], 10, 64)
 	if err != nil || revision < 1 {
-		return factorio.Secrets{}, 0, fmt.Errorf("referenced setup Secret %q has an invalid revision", key.Name)
+		return nil, 0, fmt.Errorf("referenced setup Secret %q has an invalid revision", key.Name)
 	}
 	if secret.Immutable == nil || *secret.Immutable == false {
-		return factorio.Secrets{}, 0, fmt.Errorf("referenced setup Secret %q must be immutable", key.Name)
+		return nil, 0, fmt.Errorf("referenced setup Secret %q must be immutable", key.Name)
 	}
 	if secret.Type != corev1.SecretTypeOpaque {
-		return factorio.Secrets{}, 0, fmt.Errorf("referenced setup Secret %q must use type Opaque", key.Name)
+		return nil, 0, fmt.Errorf("referenced setup Secret %q must use type Opaque", key.Name)
 	}
 	if len(secret.Data) != 1 {
-		return factorio.Secrets{}, 0, fmt.Errorf("referenced setup Secret %q has unexpected data keys", key.Name)
+		return nil, 0, fmt.Errorf("referenced setup Secret %q has unexpected data keys", key.Name)
 	}
-	secrets, err := factorio.DecodeSecrets(secret.Data[factorio.SecretDataKey])
+	secretEnv, err := gamemanagement.RuntimeSecretEnv(definition.ID, secret.Data[gamemanagement.SecretDataKey])
 	if err != nil {
-		return factorio.Secrets{}, 0, fmt.Errorf("referenced setup Secret %q does not match the pinned adapter schema", key.Name)
+		return nil, 0, fmt.Errorf("referenced setup Secret %q does not match the pinned adapter schema", key.Name)
 	}
-	return secrets, revision, nil
+	return secretEnv, revision, nil
 }
 
-func (r *GameServerReconciler) validateModArtifacts(ctx context.Context, gameServer *plexusv1alpha1.GameServer) error {
+func (r *GameServerReconciler) validateModArtifacts(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition) error {
 	mods := gameServer.Spec.SelectedSetup.Mods
+	if definition.Workload.SupportsMods == false {
+		if len(mods) != 0 {
+			return fmt.Errorf("%s does not support managed mods", definition.DisplayName)
+		}
+		return nil
+	}
 	if len(mods) > 1 {
 		return fmt.Errorf("Factorio one-mod tracer accepts at most one enabled mod")
 	}
@@ -244,10 +249,11 @@ func (r *GameServerReconciler) validateModArtifacts(ctx context.Context, gameSer
 type setupSecretMigrationError struct {
 	name          string
 	schemaVersion string
+	supported     string
 }
 
 func (err *setupSecretMigrationError) Error() string {
-	return fmt.Sprintf("referenced setup Secret %q uses schema %q; publish a replacement using supported schema %q", err.name, err.schemaVersion, factorio.SecretSchemaVersion)
+	return fmt.Sprintf("referenced setup Secret %q uses schema %q; publish a replacement using supported schema %q", err.name, err.schemaVersion, err.supported)
 }
 
 func (r *GameServerReconciler) SetupWithManager(manager ctrl.Manager) error {
@@ -261,22 +267,22 @@ func (r *GameServerReconciler) SetupWithManager(manager ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *GameServerReconciler) reconcileRunning(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition, configuration factorio.Configuration, secrets factorio.Secrets, secretRevision int64) (ctrl.Result, error) {
-	if _, err := r.ensureConfigMap(ctx, gameServer, configuration); err != nil {
+func (r *GameServerReconciler) reconcileRunning(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition, configuration json.RawMessage, secretEnv map[string][]byte, secretRevision int64) (ctrl.Result, error) {
+	if _, err := r.ensureConfigMap(ctx, gameServer, definition, configuration); err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "ConfigurationReconcileFailed", err)
 	}
-	if _, err := r.ensureRuntimeSecret(ctx, gameServer, secrets, secretRevision); err != nil {
+	if _, err := r.ensureRuntimeSecret(ctx, gameServer, definition, secretEnv, secretRevision); err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "ConfigurationReconcileFailed", err)
 	}
 	service, err := r.ensureService(ctx, gameServer, definition)
 	if err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "ServiceReconcileFailed", err)
 	}
-	deployment, err := r.ensureDeployment(ctx, gameServer, definition, secretRevision)
+	deployment, err := r.ensureDeployment(ctx, gameServer, definition, configuration, secretRevision)
 	if err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "WorkloadReconcileFailed", err)
 	}
-	if failure, err := r.workloadFailure(ctx, gameServer, deployment); err != nil {
+	if failure, err := r.workloadFailure(ctx, gameServer, definition, deployment); err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "WorkloadObservationFailed", err)
 	} else if failure != nil {
 		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseFailed, failure.message)
@@ -290,33 +296,37 @@ func (r *GameServerReconciler) reconcileRunning(ctx context.Context, gameServer 
 
 	endpoint, endpointReady := serviceEndpoint(service, definition.Ports[0])
 	if deploymentRolloutAvailable(deployment) == false {
-		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStarting, "Waiting for the Factorio workload to become available")
+		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStarting, fmt.Sprintf("Waiting for the %s workload to become available", definition.DisplayName))
 		preserveActiveRevision(&status, gameServer.Status)
 		status.Endpoint = endpoint
-		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "WorkloadUnavailable", "Persistent storage and service are ready; the Factorio workload is not yet available")
+		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "WorkloadUnavailable", fmt.Sprintf("Persistent storage and service are ready; the %s workload is not yet available", definition.DisplayName))
 		setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is ready")
 		setEndpointCondition(&status, gameServer.Generation, endpointReady)
 		return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
 	}
 	if !endpointReady {
-		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStarting, "Factorio is running; waiting for a public service endpoint")
+		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStarting, fmt.Sprintf("%s is running; waiting for a public service endpoint", definition.DisplayName))
 		acknowledgeActiveRevision(&status, gameServer, secretRevision)
 		acknowledgeInstalledMods(&status, gameServer)
-		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "EndpointPending", "Factorio is available, but the load balancer has not assigned a public endpoint")
+		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "EndpointPending", fmt.Sprintf("%s is available, but the load balancer has not assigned a public endpoint", definition.DisplayName))
 		setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is ready")
 		setEndpointCondition(&status, gameServer.Generation, false)
-		setCondition(&status, gameServer.Generation, conditionMods, metav1.ConditionTrue, "ModsInstalled", "Enabled Factorio mod selection was installed by the available workload")
+		if definition.Workload.SupportsMods {
+			setCondition(&status, gameServer.Generation, conditionMods, metav1.ConditionTrue, "ModsInstalled", fmt.Sprintf("Enabled %s mod selection was installed by the available workload", definition.DisplayName))
+		}
 		return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
 	}
 
-	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseRunning, "Factorio workload is running")
+	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseRunning, fmt.Sprintf("%s workload is running", definition.DisplayName))
 	acknowledgeActiveRevision(&status, gameServer, secretRevision)
 	acknowledgeInstalledMods(&status, gameServer)
 	status.Endpoint = endpoint
-	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionTrue, "WorkloadAvailable", "Factorio workload is available")
+	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionTrue, "WorkloadAvailable", fmt.Sprintf("%s workload is available", definition.DisplayName))
 	setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is ready")
 	setEndpointCondition(&status, gameServer.Generation, true)
-	setCondition(&status, gameServer.Generation, conditionMods, metav1.ConditionTrue, "ModsInstalled", "Enabled Factorio mod selection was installed by the available workload")
+	if definition.Workload.SupportsMods {
+		setCondition(&status, gameServer.Generation, conditionMods, metav1.ConditionTrue, "ModsInstalled", fmt.Sprintf("Enabled %s mod selection was installed by the available workload", definition.DisplayName))
+	}
 	return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
 }
 
@@ -350,7 +360,7 @@ func observedInstalledMods(mods []plexusv1alpha1.ModSpec) []plexusv1alpha1.Insta
 
 type observedWorkloadFailure struct{ reason, message string }
 
-func (r *GameServerReconciler) workloadFailure(ctx context.Context, gameServer *plexusv1alpha1.GameServer, deployment *appsv1.Deployment) (*observedWorkloadFailure, error) {
+func (r *GameServerReconciler) workloadFailure(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition, deployment *appsv1.Deployment) (*observedWorkloadFailure, error) {
 	pods, err := r.ownedDeploymentPods(ctx, gameServer, deployment)
 	if err != nil {
 		return nil, err
@@ -358,20 +368,20 @@ func (r *GameServerReconciler) workloadFailure(ctx context.Context, gameServer *
 	for _, pod := range pods {
 		for _, condition := range pod.Status.Conditions {
 			if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse && condition.Reason == corev1.PodReasonUnschedulable {
-				return &observedWorkloadFailure{reason: "WorkloadSchedulingFailed", message: "Factorio workload could not be scheduled"}, nil
+				return &observedWorkloadFailure{reason: "WorkloadSchedulingFailed", message: definition.DisplayName + " workload could not be scheduled"}, nil
 			}
 		}
 		for _, status := range append(append([]corev1.ContainerStatus(nil), pod.Status.InitContainerStatuses...), pod.Status.ContainerStatuses...) {
 			if status.State.Waiting != nil && imageFailureReason(status.State.Waiting.Reason) {
-				return &observedWorkloadFailure{reason: "WorkloadImagePullFailed", message: "Factorio workload image could not be pulled"}, nil
+				return &observedWorkloadFailure{reason: "WorkloadImagePullFailed", message: definition.DisplayName + " workload image could not be pulled"}, nil
 			}
 			if status.State.Terminated == nil || status.State.Terminated.ExitCode == 0 {
 				continue
 			}
 			if status.Name == "factorio-mod-sync" && len(gameServer.Spec.SelectedSetup.Mods) != 0 {
-				return &observedWorkloadFailure{reason: "ModInstallFailed", message: "Factorio mod synchronization failed before workload startup"}, nil
+				return &observedWorkloadFailure{reason: "ModInstallFailed", message: definition.DisplayName + " mod synchronization failed before workload startup"}, nil
 			}
-			return &observedWorkloadFailure{reason: "WorkloadInitializationFailed", message: "Factorio workload initialization failed"}, nil
+			return &observedWorkloadFailure{reason: "WorkloadInitializationFailed", message: definition.DisplayName + " workload initialization failed"}, nil
 		}
 	}
 	for _, condition := range deployment.Status.Conditions {
@@ -379,7 +389,7 @@ func (r *GameServerReconciler) workloadFailure(ctx context.Context, gameServer *
 			continue
 		}
 		if condition.Type == appsv1.DeploymentReplicaFailure || (condition.Type == appsv1.DeploymentProgressing && condition.Reason == "ProgressDeadlineExceeded") {
-			return &observedWorkloadFailure{reason: "WorkloadRolloutFailed", message: "Factorio workload rollout failed"}, nil
+			return &observedWorkloadFailure{reason: "WorkloadRolloutFailed", message: definition.DisplayName + " workload rollout failed"}, nil
 		}
 	}
 	return nil, nil
@@ -428,15 +438,13 @@ func deploymentRolloutAvailable(deployment *appsv1.Deployment) bool {
 		deployment.Status.AvailableReplicas == desiredReplicas
 }
 
-func (r *GameServerReconciler) ensureRuntimeSecret(ctx context.Context, gameServer *plexusv1alpha1.GameServer, secrets factorio.Secrets, revision int64) (*corev1.Secret, error) {
+func (r *GameServerReconciler) ensureRuntimeSecret(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition, secretEnv map[string][]byte, revision int64) (*corev1.Secret, error) {
 	name := runtimeSecretName(gameServer, revision)
 	secret := &corev1.Secret{}
 	key := client.ObjectKey{Namespace: gameServer.Namespace, Name: name}
-	desiredData := map[string][]byte{
-		"USERNAME":      []byte(secrets.Username),
-		"TOKEN":         []byte(secrets.Token),
-		"GAME_PASSWORD": []byte(secrets.GamePassword),
-		"RCON_PASSWORD": []byte(secrets.RCONPassword),
+	desiredData := secretEnv
+	if desiredData == nil {
+		return nil, fmt.Errorf("game %q produced no runtime secret environment", definition.ID)
 	}
 	if err := r.Get(ctx, key, secret); err == nil {
 		if err := ensureControlledBy(gameServer, secret); err != nil {
@@ -455,7 +463,7 @@ func (r *GameServerReconciler) ensureRuntimeSecret(ctx context.Context, gameServ
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name, Namespace: gameServer.Namespace,
 			Labels:      childLabels(gameServer),
-			Annotations: map[string]string{factorio.SecretRevisionAnnotation: strconv.FormatInt(revision, 10)},
+			Annotations: map[string]string{gamemanagement.SecretRevisionAnnotation: strconv.FormatInt(revision, 10)},
 		},
 		Immutable: &immutable,
 		Type:      corev1.SecretTypeOpaque,
@@ -467,15 +475,14 @@ func (r *GameServerReconciler) ensureRuntimeSecret(ctx context.Context, gameServ
 	return secret, r.Create(ctx, secret)
 }
 
-func (r *GameServerReconciler) ensureConfigMap(ctx context.Context, gameServer *plexusv1alpha1.GameServer, configuration factorio.Configuration) (*corev1.ConfigMap, error) {
-	settings, err := renderFactorioSettings(configuration)
+func (r *GameServerReconciler) ensureConfigMap(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition, configuration json.RawMessage) (*corev1.ConfigMap, error) {
+	desiredData, err := gamemanagement.RenderConfigFiles(definition.ID, configuration)
 	if err != nil {
 		return nil, err
 	}
 	name := runtimeConfigMapName(gameServer)
 	configMap := &corev1.ConfigMap{}
 	key := client.ObjectKey{Namespace: gameServer.Namespace, Name: name}
-	desiredData := map[string]string{configFileName: settings}
 	if err := r.Get(ctx, key, configMap); err == nil {
 		if err := ensureControlledBy(gameServer, configMap); err != nil {
 			return nil, err
@@ -500,7 +507,7 @@ func (r *GameServerReconciler) ensureConfigMap(ctx context.Context, gameServer *
 	return configMap, r.Create(ctx, configMap)
 }
 
-func (r *GameServerReconciler) reconcileStopped(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (ctrl.Result, error) {
+func (r *GameServerReconciler) reconcileStopped(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition) (ctrl.Result, error) {
 	deleted, err := r.deleteDeployment(ctx, gameServer)
 	if err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "WorkloadStopFailed", err)
@@ -510,8 +517,8 @@ func (r *GameServerReconciler) reconcileStopped(ctx context.Context, gameServer 
 		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "ServiceCleanupFailed", err)
 	}
 	if deleted || serviceDeleted {
-		status := r.stoppingStatus(ctx, gameServer, "Stopping the Factorio workload; persistent storage is retained")
-		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "WorkloadStopping", "Factorio workload is being removed")
+		status := r.stoppingStatus(ctx, gameServer, fmt.Sprintf("Stopping the %s workload; persistent storage is retained", definition.DisplayName))
+		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "WorkloadStopping", definition.DisplayName+" workload is being removed")
 		setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is retained")
 		setCondition(&status, gameServer.Generation, conditionEndpoint, metav1.ConditionFalse, "ServiceStopping", "Public endpoint is being removed")
 		if err := r.updateStatus(ctx, gameServer, status); err != nil {
@@ -520,11 +527,11 @@ func (r *GameServerReconciler) reconcileStopped(ctx context.Context, gameServer 
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStopped, "Factorio workload is stopped; persistent storage is retained")
-	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "DesiredStopped", "No Factorio workload is running")
+	status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStopped, definition.DisplayName+" workload is stopped; persistent storage is retained")
+	setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "DesiredStopped", "No "+definition.DisplayName+" workload is running")
 	setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is retained")
 	setCondition(&status, gameServer.Generation, conditionEndpoint, metav1.ConditionFalse, "DesiredStopped", "A stopped server has no public endpoint")
-	setCondition(&status, gameServer.Generation, conditionShutdown, metav1.ConditionTrue, "DesiredStopped", "No Factorio workload is running")
+	setCondition(&status, gameServer.Generation, conditionShutdown, metav1.ConditionTrue, "DesiredStopped", "No "+definition.DisplayName+" workload is running")
 	return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.updateStatus(ctx, gameServer, status)
 }
 
@@ -616,10 +623,41 @@ func (r *GameServerReconciler) ensureService(ctx context.Context, gameServer *pl
 	return service, err
 }
 
-func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition, secretRevision int64) (*appsv1.Deployment, error) {
+func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition, configuration json.RawMessage, secretRevision int64) (*appsv1.Deployment, error) {
 	lifecycle, terminationGracePeriod, err := gracefulShutdownLifecycle(definition)
 	if err != nil {
 		return nil, err
+	}
+	env, err := environment(definition, configuration, runtimeSecretName(gameServer, secretRevision))
+	if err != nil {
+		return nil, err
+	}
+	workload := definition.Workload
+	initMounts := []corev1.VolumeMount{
+		{Name: workload.Config.SourceName, MountPath: workload.Config.SourcePath, ReadOnly: true},
+		{Name: dataVolumeName, MountPath: workload.DataMountPath},
+	}
+	if workload.Config.VolumeName != "" {
+		initMounts[1] = corev1.VolumeMount{Name: workload.Config.VolumeName, MountPath: workload.Config.MountPath}
+	}
+	initContainers := []corev1.Container{{
+		Name:         workload.Config.InitName,
+		Image:        definition.DefaultImage,
+		Command:      []string{"/bin/sh", "-c"},
+		Args:         []string{workload.Config.InitCopyCommand},
+		VolumeMounts: initMounts,
+	}}
+	if workload.SupportsMods {
+		initContainers = append(initContainers, modSyncInitContainer(gameServer, definition))
+	}
+	volumeMounts := []corev1.VolumeMount{
+		{Name: dataVolumeName, MountPath: workload.DataMountPath},
+	}
+	if workload.Config.VolumeName != "" {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{Name: workload.Config.VolumeName, MountPath: workload.Config.MountPath})
+	}
+	for _, mount := range workload.AdditionalMounts {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{Name: mount.Name, MountPath: mount.MountPath, SubPath: mount.SubPath})
 	}
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: gameServer.Name, Namespace: gameServer.Namespace}}
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
@@ -640,39 +678,23 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 			ObjectMeta: metav1.ObjectMeta{
 				Labels: childLabels(gameServer),
 				Annotations: map[string]string{
-					"plexus.gg/restart-generation":       fmt.Sprint(gameServer.Spec.RestartGeneration),
-					"plexus.gg/configuration-generation": fmt.Sprint(gameServer.Generation),
-					factorio.SecretRevisionAnnotation:    strconv.FormatInt(secretRevision, 10),
+					"plexus.gg/restart-generation":          fmt.Sprint(gameServer.Spec.RestartGeneration),
+					"plexus.gg/configuration-generation":    fmt.Sprint(gameServer.Generation),
+					gamemanagement.SecretRevisionAnnotation: strconv.FormatInt(secretRevision, 10),
 				},
 			},
 			Spec: corev1.PodSpec{
 				TerminationGracePeriodSeconds: terminationGracePeriod,
-				InitContainers: []corev1.Container{{
-					Name:    "factorio-config-init",
-					Image:   definition.DefaultImage,
-					Command: []string{"/bin/sh", "-c"},
-					Args:    []string{"cp /plexus/config/server-settings.json /factorio/config/server-settings.json"},
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: configSourceName, MountPath: configSourcePath, ReadOnly: true},
-						{Name: configVolumeName, MountPath: configMountPath},
-					},
-				}, modSyncInitContainer(gameServer, definition)},
+				InitContainers:                initContainers,
 				Containers: []corev1.Container{{
-					Name:  factorio.GameID,
-					Image: definition.DefaultImage,
-					Env:   environment(definition, runtimeSecretName(gameServer, secretRevision)),
-					Ports: containerPorts(definition),
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: dataVolumeName, MountPath: dataMountPath},
-						{Name: configVolumeName, MountPath: configMountPath},
-					},
-					Lifecycle: lifecycle,
+					Name:         workload.ContainerName,
+					Image:        definition.DefaultImage,
+					Env:          env,
+					Ports:        containerPorts(definition),
+					VolumeMounts: volumeMounts,
+					Lifecycle:    lifecycle,
 				}},
-				Volumes: append([]corev1.Volume{
-					{Name: dataVolumeName, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: gameServer.Name}}},
-					{Name: configSourceName, VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: runtimeConfigMapName(gameServer)}}}},
-					{Name: configVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-				}, modArtifactVolumes(gameServer)...),
+				Volumes: append(workloadVolumes(gameServer, definition), modArtifactVolumes(gameServer, definition)...),
 			},
 		}
 		return nil
@@ -682,18 +704,28 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 
 func gracefulShutdownLifecycle(definition games.GameDefinition) (*corev1.Lifecycle, *int64, error) {
 	policy := definition.Shutdown
-	if policy.Strategy != "rcon-command" || policy.Command == "" || policy.TimeoutSeconds < 1 {
+	if policy.TimeoutSeconds < 1 {
 		return nil, nil, fmt.Errorf("game %q has no supported graceful shutdown policy", definition.ID)
 	}
 	timeout := int64(policy.TimeoutSeconds)
-	return &corev1.Lifecycle{
-		PreStop: &corev1.LifecycleHandler{Exec: &corev1.ExecAction{Command: []string{"rcon", policy.Command}}},
-	}, &timeout, nil
+	switch policy.Strategy {
+	case "rcon-command":
+		if policy.Command == "" {
+			return nil, nil, fmt.Errorf("game %q has no supported graceful shutdown policy", definition.ID)
+		}
+		return &corev1.Lifecycle{
+			PreStop: &corev1.LifecycleHandler{Exec: &corev1.ExecAction{Command: []string{"rcon", policy.Command}}},
+		}, &timeout, nil
+	case "process-signal":
+		return nil, &timeout, nil
+	default:
+		return nil, nil, fmt.Errorf("game %q has no supported graceful shutdown policy", definition.ID)
+	}
 }
 
 func modSyncInitContainer(gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition) corev1.Container {
 	command := "mkdir -p /factorio/mods && find /factorio/mods -maxdepth 1 -type f -name '*.zip' -delete"
-	mounts := []corev1.VolumeMount{{Name: dataVolumeName, MountPath: dataMountPath}}
+	mounts := []corev1.VolumeMount{{Name: dataVolumeName, MountPath: definition.Workload.DataMountPath}}
 	if len(gameServer.Spec.SelectedSetup.Mods) == 1 {
 		mod := gameServer.Spec.SelectedSetup.Mods[0]
 		command += " && cp /plexus/mod/archive.zip /factorio/mods/" + mod.ArchiveFileName
@@ -702,8 +734,19 @@ func modSyncInitContainer(gameServer *plexusv1alpha1.GameServer, definition game
 	return corev1.Container{Name: "factorio-mod-sync", Image: definition.DefaultImage, Command: []string{"/bin/sh", "-eu", "-c"}, Args: []string{command}, VolumeMounts: mounts}
 }
 
-func modArtifactVolumes(gameServer *plexusv1alpha1.GameServer) []corev1.Volume {
-	if len(gameServer.Spec.SelectedSetup.Mods) != 1 {
+func workloadVolumes(gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition) []corev1.Volume {
+	volumes := []corev1.Volume{
+		{Name: dataVolumeName, VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: gameServer.Name}}},
+		{Name: definition.Workload.Config.SourceName, VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: runtimeConfigMapName(gameServer)}}}},
+	}
+	if definition.Workload.Config.VolumeName != "" {
+		volumes = append(volumes, corev1.Volume{Name: definition.Workload.Config.VolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+	}
+	return volumes
+}
+
+func modArtifactVolumes(gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition) []corev1.Volume {
+	if definition.Workload.SupportsMods == false || len(gameServer.Spec.SelectedSetup.Mods) != 1 {
 		return nil
 	}
 	return []corev1.Volume{{Name: modSourceName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
@@ -798,42 +841,6 @@ func revisionScopedResourceName(gameServerName string, suffix string) string {
 	}
 	normalized = strings.TrimRight(normalized, "-")
 	return normalized + hashSuffix + suffix
-}
-
-func renderFactorioSettings(configuration factorio.Configuration) (string, error) {
-	tags := configuration.Tags
-	if tags == nil {
-		tags = []string{}
-	}
-	settings := struct {
-		Name                    string              `json:"name"`
-		Description             string              `json:"description"`
-		Tags                    []string            `json:"tags"`
-		MaxPlayers              int                 `json:"max_players"`
-		Visibility              factorio.Visibility `json:"visibility"`
-		RequireUserVerification bool                `json:"require_user_verification"`
-		AllowCommands           string              `json:"allow_commands"`
-		AutosaveInterval        int                 `json:"autosave_interval"`
-		AutosaveSlots           int                 `json:"autosave_slots"`
-		AFKAutokickInterval     int                 `json:"afk_autokick_interval"`
-		AutoPause               bool                `json:"auto_pause"`
-		OnlyAdminsCanPause      bool                `json:"only_admins_can_pause_the_game"`
-		AutosaveOnlyOnServer    bool                `json:"autosave_only_on_server"`
-		NonBlockingSaving       bool                `json:"non_blocking_saving"`
-	}{
-		Name: configuration.Name, Description: configuration.Description, Tags: tags,
-		MaxPlayers: configuration.MaxPlayers, Visibility: configuration.Visibility,
-		RequireUserVerification: configuration.RequireUserVerification, AllowCommands: configuration.AllowCommands,
-		AutosaveInterval: configuration.Autosave.IntervalMinutes, AutosaveSlots: configuration.Autosave.Slots,
-		AFKAutokickInterval: configuration.AFKAutokickMinutes, AutoPause: configuration.AutoPause,
-		OnlyAdminsCanPause: configuration.OnlyAdminsCanPause, AutosaveOnlyOnServer: configuration.AutosaveOnlyOnServer,
-		NonBlockingSaving: configuration.NonBlockingSaving,
-	}
-	rendered, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("render Factorio server settings: %w", err)
-	}
-	return string(append(rendered, '\n')), nil
 }
 
 func (r *GameServerReconciler) deleteOwnedObject(ctx context.Context, gameServer *plexusv1alpha1.GameServer, object client.Object) (bool, error) {
@@ -967,7 +974,13 @@ func (r *GameServerReconciler) stoppingStatus(ctx context.Context, gameServer *p
 
 func (r *GameServerReconciler) shutdownProgress(ctx context.Context, gameServer *plexusv1alpha1.GameServer, gracefulMessage string) (string, string) {
 	if gameServer.Spec.ShutdownMode == plexusv1alpha1.ShutdownModeForce {
-		return "Force-stopping the Factorio workload; persistent storage is retained", "ForceStop"
+		name := "game"
+		if gameServer.Spec.SelectedSetup != nil {
+			if definition, err := games.Get(gameServer.Spec.SelectedSetup.GameID); err == nil && definition.DisplayName != "" {
+				name = definition.DisplayName
+			}
+		}
+		return fmt.Sprintf("Force-stopping the %s workload; persistent storage is retained", name), "ForceStop"
 	}
 	if r.shutdownHasTimedOut(ctx, gameServer) {
 		return takingLongerThanExpected, "TakingLongerThanExpected"
@@ -1023,7 +1036,7 @@ func setCondition(status *plexusv1alpha1.GameServerStatus, generation int64, con
 
 func setEndpointCondition(status *plexusv1alpha1.GameServerStatus, generation int64, ready bool) {
 	if ready {
-		setCondition(status, generation, conditionEndpoint, metav1.ConditionTrue, "LoadBalancerReady", "Public Factorio endpoint is assigned")
+		setCondition(status, generation, conditionEndpoint, metav1.ConditionTrue, "LoadBalancerReady", "Public endpoint is assigned")
 		return
 	}
 	setCondition(status, generation, conditionEndpoint, metav1.ConditionFalse, "LoadBalancerPending", "Waiting for the load balancer to assign a public endpoint")
@@ -1034,9 +1047,6 @@ func validateDesiredState(gameServer *plexusv1alpha1.GameServer) error {
 		if gameServer.Spec.DesiredPower != plexusv1alpha1.DesiredPowerStopped {
 			return fmt.Errorf("a GameServer without a selected setup must be stopped")
 		}
-		return nil
-	}
-	if gameServer.Spec.SelectedSetup.GameID != factorio.GameID {
 		return nil
 	}
 	if gameServer.Spec.DesiredPower != plexusv1alpha1.DesiredPowerRunning && gameServer.Spec.DesiredPower != plexusv1alpha1.DesiredPowerStopped {
@@ -1098,17 +1108,28 @@ func containerPorts(definition games.GameDefinition) []corev1.ContainerPort {
 	return ports
 }
 
-func environment(definition games.GameDefinition, runtimeSecretName string) []corev1.EnvVar {
-	names := make([]string, 0, len(definition.DefaultEnv))
-	for name := range definition.DefaultEnv {
+func environment(definition games.GameDefinition, configuration json.RawMessage, runtimeSecretName string) ([]corev1.EnvVar, error) {
+	values := maps.Clone(definition.DefaultEnv)
+	if values == nil {
+		values = map[string]string{}
+	}
+	fromConfig, err := gamemanagement.ConfigurationEnv(definition.ID, configuration)
+	if err != nil {
+		return nil, err
+	}
+	for name, value := range fromConfig {
+		values[name] = value
+	}
+	names := make([]string, 0, len(values))
+	for name := range values {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	environment := make([]corev1.EnvVar, 0, len(names))
+	environment := make([]corev1.EnvVar, 0, len(names)+len(definition.Workload.SecretEnvKeys))
 	for _, name := range names {
-		environment = append(environment, corev1.EnvVar{Name: name, Value: definition.DefaultEnv[name]})
+		environment = append(environment, corev1.EnvVar{Name: name, Value: values[name]})
 	}
-	for _, name := range []string{"GAME_PASSWORD", "RCON_PASSWORD", "TOKEN", "USERNAME"} {
+	for _, name := range definition.Workload.SecretEnvKeys {
 		environment = append(environment, corev1.EnvVar{
 			Name: name,
 			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
@@ -1116,7 +1137,7 @@ func environment(definition games.GameDefinition, runtimeSecretName string) []co
 			}},
 		})
 	}
-	return environment
+	return environment, nil
 }
 
 func protocol(value string) corev1.Protocol {

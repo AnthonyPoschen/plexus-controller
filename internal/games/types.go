@@ -5,6 +5,7 @@ import (
 
 	factorio "github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/factorio/v1"
 	"github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/model"
+	zomboid "github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/projectzomboid/v1"
 )
 
 // GameDefinition contains all the controller-owned defaults and behavior
@@ -54,6 +55,35 @@ type GameDefinition struct {
 	// Shutdown is the adapter-owned graceful shutdown contract used when a
 	// workload is stopped or replaced.
 	Shutdown model.ShutdownPolicy
+
+	// Workload describes adapter-owned container mounts and rendering.
+	Workload WorkloadSpec
+}
+
+// WorkloadSpec is the controller-owned runtime layout for one game adapter.
+type WorkloadSpec struct {
+	ContainerName    string
+	DataMountPath    string
+	Config           ConfigRuntime
+	SecretEnvKeys    []string
+	SupportsMods     bool
+	AdditionalMounts []VolumeMount
+}
+
+type ConfigRuntime struct {
+	VolumeName      string
+	SourceName      string
+	MountPath       string
+	SourcePath      string
+	FileName        string
+	InitName        string
+	InitCopyCommand string
+}
+
+type VolumeMount struct {
+	Name      string
+	MountPath string
+	SubPath   string
 }
 
 type SaveExportDefinition struct {
@@ -149,16 +179,67 @@ var Registry = map[string]GameDefinition{
 				},
 			},
 		},
+		Workload: WorkloadSpec{
+			ContainerName: factorio.GameID,
+			DataMountPath: "/factorio",
+			Config: ConfigRuntime{
+				VolumeName:      "factorio-config",
+				SourceName:      "factorio-config-source",
+				MountPath:       "/factorio/config",
+				SourcePath:      "/plexus/config",
+				FileName:        factorio.ConfigFileName,
+				InitName:        "factorio-config-init",
+				InitCopyCommand: "cp /plexus/config/server-settings.json /factorio/config/server-settings.json",
+			},
+			SecretEnvKeys: []string{"GAME_PASSWORD", "RCON_PASSWORD", "TOKEN", "USERNAME"},
+			SupportsMods:  true,
+		},
 	},
 
-	"project-zomboid": {
-		ID:                 "project-zomboid",
-		DisplayName:        "Project Zomboid",
-		DefaultImage:       "docker.io/renegademaster/zomboid-dedicated-server:latest",
-		MinDiskGiB:         15,
-		RecommendedDiskGiB: 60,
-		RawDiskPaths:       []string{"/home/steam/Zomboid"},
-		// ... more fields as we implement
+	zomboid.GameID: {
+		ID:                      zomboid.GameID,
+		ManagementSchemaVersion: zomboid.SchemaVersion,
+		DisplayName:             "Project Zomboid",
+		DefaultImage:            "docker.io/renegademaster/zomboid-dedicated-server:" + zomboid.SupportedImageTag,
+		MinDiskGiB:              15,
+		RecommendedDiskGiB:      60,
+		RawDiskPaths:            []string{"/home/steam/Zomboid", "/home/steam/ZomboidDedicatedServer"},
+		DefaultEnv: map[string]string{
+			"ADMIN_USERNAME": zomboid.AdminUsername,
+			"USE_STEAM":      "true",
+		},
+		Ports: []GamePort{
+			{Name: "game", Port: 16261, Protocol: "UDP"},
+			{Name: "direct", Port: 16262, Protocol: "UDP"},
+		},
+		Shutdown: zomboid.Schema().Shutdown,
+		ConfigLayer: ConfigLayer{
+			Templates: []ConfigTemplate{
+				{
+					TargetPath: "/home/steam/Zomboid/Server/" + zomboid.ConfigIdentity + ".ini",
+					Format:     "ini",
+					Mappings: map[string]string{
+						"PublicName": "name",
+						"MaxPlayers": "maxPlayers",
+					},
+				},
+			},
+		},
+		Workload: WorkloadSpec{
+			ContainerName: zomboid.GameID,
+			DataMountPath: "/home/steam/Zomboid",
+			Config: ConfigRuntime{
+				SourceName:      "zomboid-config-source",
+				SourcePath:      "/plexus/config",
+				FileName:        zomboid.ConfigFileName,
+				InitName:        "zomboid-config-init",
+				InitCopyCommand: "mkdir -p /home/steam/Zomboid/Server && cp /plexus/config/server.ini /home/steam/Zomboid/Server/" + zomboid.ConfigIdentity + ".ini",
+			},
+			SecretEnvKeys: []string{"ADMIN_PASSWORD", "RCON_PASSWORD", "SERVER_PASSWORD"},
+			AdditionalMounts: []VolumeMount{
+				{Name: "game-data", MountPath: "/home/steam/ZomboidDedicatedServer", SubPath: "install"},
+			},
+		},
 	},
 }
 

@@ -29,6 +29,7 @@ import (
 
 	plexusv1alpha1 "github.com/AnthonyPoschen/plexus-controller/api/v1alpha1"
 	factorio "github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/factorio/v1"
+	zomboid "github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/projectzomboid/v1"
 )
 
 func TestFactorioReconcileRunningThenStopped(t *testing.T) {
@@ -1046,7 +1047,7 @@ func TestFactorioRolloutKeepsPreviousPodTemplatePinnedToImmutableInputs(t *testi
 
 	var oldConfig corev1.ConfigMap
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-config-g8"}, &oldConfig)
-	if oldConfig.Immutable == nil || *oldConfig.Immutable == false || !strings.Contains(oldConfig.Data[configFileName], "Plexus Factorio Server") {
+	if oldConfig.Immutable == nil || *oldConfig.Immutable == false || !strings.Contains(oldConfig.Data[factorio.ConfigFileName], "Plexus Factorio Server") {
 		t.Fatalf("previous ConfigMap changed during rollout: %#v", oldConfig)
 	}
 	var oldRuntimeSecret corev1.Secret
@@ -1151,7 +1152,7 @@ func TestFactorioStoppedEditIsAcknowledgedAndNextStartRendersExactEnvelope(t *te
 
 	var configMap corev1.ConfigMap
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-config-g3"}, &configMap)
-	assertJSONEqual(t, configMap.Data[configFileName], `{
+	assertJSONEqual(t, configMap.Data[factorio.ConfigFileName], `{
 		"name":"Acceptance Factory","max_players":32,"autosave_interval":7,"autosave_slots":6,
 		"description":"","tags":[],"visibility":{"public":true,"lan":true},
 		"require_user_verification":true,"allow_commands":"admins-only","afk_autokick_interval":0,
@@ -1202,7 +1203,7 @@ func TestFactorioReconcileRendersCustomConfigurationAndSecretBackedEnvironment(t
 		"autosave_interval":3,"autosave_slots":12,"afk_autokick_interval":45,"auto_pause":false,
 		"only_admins_can_pause_the_game":false,"autosave_only_on_server":false,"non_blocking_saving":true
 	}`
-	assertJSONEqual(t, configMap.Data[configFileName], wantSettings)
+	assertJSONEqual(t, configMap.Data[factorio.ConfigFileName], wantSettings)
 
 	var runtimeSecret corev1.Secret
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-runtime-g1-r1"}, &runtimeSecret)
@@ -1232,7 +1233,7 @@ func TestFactorioReconcileRendersCustomConfigurationAndSecretBackedEnvironment(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	exposed := configMap.Data[configFileName] + string(deploymentJSON) + currentStatusText(getGameServer(t, ctx, kubeClient, request.NamespacedName))
+	exposed := configMap.Data[factorio.ConfigFileName] + string(deploymentJSON) + currentStatusText(getGameServer(t, ctx, kubeClient, request.NamespacedName))
 	for _, sensitive := range []string{secretValues.Username, secretValues.Token, secretValues.GamePassword, secretValues.RCONPassword} {
 		if strings.Contains(exposed, sensitive) {
 			t.Fatal("a sensitive fixture was exposed outside a Secret")
@@ -1332,8 +1333,8 @@ func TestFactorioInvalidReplacementSecretPreservesLiveRuntimeStatus(t *testing.T
 func TestUnsupportedGameDoesNotRequireFactorioSecret(t *testing.T) {
 	ctx := context.Background()
 	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
-	gameServer.Spec.SelectedSetup.GameID = "project-zomboid"
-	gameServer.Spec.SelectedSetup.Configuration.SchemaVersion = "project-zomboid/v1"
+	gameServer.Spec.SelectedSetup.GameID = "minecraft"
+	gameServer.Spec.SelectedSetup.Configuration.SchemaVersion = "minecraft/v1"
 	reconciler, kubeClient := testReconcilerWithoutSecret(t, gameServer)
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
 
@@ -1415,16 +1416,109 @@ func TestGameServerDeletionCleansUpOwnedRuntimeResources(t *testing.T) {
 	}
 }
 
+func TestProjectZomboidReconcileRunningThenStopped(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServerForGame(plexusv1alpha1.DesiredPowerRunning, zomboid.GameID, zomboid.SchemaVersion)
+	reconciler, kubeClient := testReconciler(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var pvc corev1.PersistentVolumeClaim
+	get(t, ctx, kubeClient, request.NamespacedName, &pvc)
+	if got := pvc.Spec.Resources.Requests.Storage().String(); got != "60Gi" {
+		t.Fatalf("storage request = %q, want 60Gi", got)
+	}
+
+	var service corev1.Service
+	get(t, ctx, kubeClient, request.NamespacedName, &service)
+	if len(service.Spec.Ports) != 2 || service.Spec.Ports[0].Port != 16261 || service.Spec.Ports[0].Protocol != corev1.ProtocolUDP {
+		t.Fatalf("Project Zomboid service ports = %#v", service.Spec.Ports)
+	}
+
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if container.Name != zomboid.GameID || container.Image != "docker.io/renegademaster/zomboid-dedicated-server:"+zomboid.SupportedImageTag {
+		t.Fatalf("Project Zomboid container = %#v", container)
+	}
+	if container.Lifecycle != nil {
+		t.Fatalf("Project Zomboid should use process-signal shutdown, got %#v", container.Lifecycle)
+	}
+	if deployment.Spec.Template.Spec.TerminationGracePeriodSeconds == nil || *deployment.Spec.Template.Spec.TerminationGracePeriodSeconds != 120 {
+		t.Fatalf("Project Zomboid termination grace period = %#v", deployment.Spec.Template.Spec.TerminationGracePeriodSeconds)
+	}
+	if got := container.VolumeMounts[0].MountPath; got != "/home/steam/Zomboid" {
+		t.Fatalf("persistent mount path = %q", got)
+	}
+	if len(deployment.Spec.Template.Spec.InitContainers) != 1 || deployment.Spec.Template.Spec.InitContainers[0].Name != "zomboid-config-init" {
+		t.Fatalf("Project Zomboid init containers = %#v", deployment.Spec.Template.Spec.InitContainers)
+	}
+
+	var configMap corev1.ConfigMap
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: gameServer.Name + "-config-g1"}, &configMap)
+	if !strings.Contains(configMap.Data[zomboid.ConfigFileName], "PublicName=Plexus Zomboid") || strings.Contains(configMap.Data[zomboid.ConfigFileName], "adminPassword") {
+		t.Fatalf("Project Zomboid config = %#v", configMap.Data)
+	}
+
+	var runtimeSecret corev1.Secret
+	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: gameServer.Name + "-runtime-g1-r1"}, &runtimeSecret)
+	if string(runtimeSecret.Data["ADMIN_PASSWORD"]) == "" || string(runtimeSecret.Data["RCON_PASSWORD"]) == "" {
+		t.Fatalf("Project Zomboid runtime secret = %#v", runtimeSecret.Data)
+	}
+
+	deployment.Status.Replicas = 1
+	deployment.Status.AvailableReplicas = 1
+	deployment.Status.UpdatedReplicas = 1
+	deployment.Status.ObservedGeneration = deployment.Generation
+	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{Hostname: "zomboid.example.com"}}
+	if err := kubeClient.Status().Update(ctx, &service); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseRunning || current.Status.Endpoint != "zomboid.example.com:16261" {
+		t.Fatalf("available status = %#v", current.Status)
+	}
+
+	current.Spec.DesiredPower = plexusv1alpha1.DesiredPowerStopped
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	reconcileOnce(t, ctx, reconciler, request)
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStopped {
+		t.Fatalf("stopped status = %#v", current.Status)
+	}
+	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected Deployment removal, got %v", err)
+	}
+	get(t, ctx, kubeClient, request.NamespacedName, &corev1.PersistentVolumeClaim{})
+}
+
 func testGameServer(power plexusv1alpha1.DesiredPower) *plexusv1alpha1.GameServer {
+	return testGameServerForGame(power, factorio.GameID, factorio.SchemaVersion)
+}
+
+func testGameServerForGame(power plexusv1alpha1.DesiredPower, gameID string, schemaVersion string) *plexusv1alpha1.GameServer {
+	name := "factorio-1"
+	if gameID != factorio.GameID {
+		name = gameID + "-1"
+	}
 	return &plexusv1alpha1.GameServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "factorio-1", Namespace: "games", UID: "gameserver-uid", Generation: 1},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "games", UID: "gameserver-uid", Generation: 1},
 		Spec: plexusv1alpha1.GameServerSpec{
 			ServerID: "server-1", OwnerUserID: "user-1", DesiredPower: power,
 			ShutdownMode: plexusv1alpha1.ShutdownModeGraceful,
 			SelectedSetup: &plexusv1alpha1.SelectedSetupSpec{
-				ID: "setup-1", GameID: "factorio",
+				ID: "setup-1", GameID: gameID,
 				Configuration: plexusv1alpha1.GameConfiguration{
-					SchemaVersion: "factorio/v1",
+					SchemaVersion: schemaVersion,
 					Values:        runtime.RawExtension{Raw: []byte(`{}`)},
 					SecretRef:     plexusv1alpha1.SetupSecretReference{Name: "setup-1-secrets"},
 				},
@@ -1482,6 +1576,12 @@ func createOwnedWorkloadPod(t *testing.T, ctx context.Context, kubeClient client
 func testSetupSecret(t *testing.T, gameServer *plexusv1alpha1.GameServer) *corev1.Secret {
 	t.Helper()
 	immutable := true
+	schemaVersion := factorio.SecretSchemaVersion
+	payload := marshalTestJSON(t, factorio.Secrets{RCONPassword: testSecretValue("rcon")})
+	if gameServer.Spec.SelectedSetup.GameID == zomboid.GameID {
+		schemaVersion = zomboid.SecretSchemaVersion
+		payload = marshalTestJSON(t, zomboid.Secrets{AdminPassword: "adminpass1", RCONPassword: "generatedrconpassword"})
+	}
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: gameServer.Spec.SelectedSetup.Configuration.SecretRef.Name, Namespace: gameServer.Namespace,
@@ -1489,13 +1589,11 @@ func testSetupSecret(t *testing.T, gameServer *plexusv1alpha1.GameServer) *corev
 				plexusv1alpha1.LabelServerID: gameServer.Spec.ServerID, plexusv1alpha1.LabelOwnerUserID: gameServer.Spec.OwnerUserID,
 				plexusv1alpha1.LabelGameID: gameServer.Spec.SelectedSetup.GameID, plexusv1alpha1.LabelSetupID: gameServer.Spec.SelectedSetup.ID,
 			},
-			Annotations: map[string]string{factorio.SecretSchemaAnnotation: factorio.SecretSchemaVersion, factorio.SecretRevisionAnnotation: "1"},
+			Annotations: map[string]string{factorio.SecretSchemaAnnotation: schemaVersion, factorio.SecretRevisionAnnotation: "1"},
 		},
 		Immutable: &immutable,
 		Type:      corev1.SecretTypeOpaque,
-		Data: map[string][]byte{factorio.SecretDataKey: marshalTestJSON(t, factorio.Secrets{
-			RCONPassword: testSecretValue("rcon"),
-		})},
+		Data:      map[string][]byte{factorio.SecretDataKey: payload},
 	}
 }
 
