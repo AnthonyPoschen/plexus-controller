@@ -176,6 +176,12 @@ func RuntimeSecretEnv(gameID string, data []byte) (map[string][]byte, error) {
 // from a decoded configuration document.
 func ConfigurationEnv(gameID string, data []byte) (map[string]string, error) {
 	switch gameID {
+	case factorio.GameID:
+		configuration, err := factorio.DecodeConfiguration(data)
+		if err != nil {
+			return nil, err
+		}
+		return factorio.ConfigurationEnv(configuration)
 	case zomboid.GameID:
 		configuration, err := zomboid.DecodeConfiguration(data)
 		if err != nil {

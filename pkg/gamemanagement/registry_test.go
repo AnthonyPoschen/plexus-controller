@@ -25,6 +25,20 @@ func TestSchemaRegistryIncludesReleasedAdapters(t *testing.T) {
 	}
 }
 
+func TestConfigurationEnvCarriesFactorioChannel(t *testing.T) {
+	env, err := ConfigurationEnv(factorio.GameID, []byte(`{"channel":"experimental","name":"Copper Works"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env[factorio.ChannelEnv] != factorio.ChannelExperimental {
+		t.Fatalf("Factorio channel env = %#v", env)
+	}
+	defaults, err := ConfigurationEnv(factorio.GameID, []byte(`{"name":"Copper Works"}`))
+	if err != nil || defaults[factorio.ChannelEnv] != factorio.ChannelStable {
+		t.Fatalf("default Factorio channel env = %#v err=%v", defaults, err)
+	}
+}
+
 func TestNormalizeConfigurationIsGameSpecificAndGeneric(t *testing.T) {
 	factorioValues, err := NormalizeConfiguration(factorio.GameID, []byte(`{"name":"Copper Works"}`))
 	if err != nil {

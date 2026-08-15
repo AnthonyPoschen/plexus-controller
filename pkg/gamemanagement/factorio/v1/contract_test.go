@@ -26,6 +26,57 @@ func TestManagementSchemaSerializationMatchesContract(t *testing.T) {
 	}
 }
 
+func TestManagementSchemaExposesStableAndExperimentalChannelsFirst(t *testing.T) {
+	schema := factorio.Schema()
+	if len(schema.Configuration.Sections) == 0 {
+		t.Fatal("expected Factorio configuration sections")
+	}
+	section := schema.Configuration.Sections[0]
+	if section.ID != "channel" || len(section.Fields) != 1 || section.Fields[0].Path != "channel" {
+		t.Fatalf("channel control must be first: %#v", section)
+	}
+	field := section.Fields[0]
+	if field.Default != factorio.ChannelStable || field.Type != "string" || !field.Required {
+		t.Fatalf("channel field = %#v", field)
+	}
+	if len(field.Options) != 2 || field.Options[0].Value != factorio.ChannelStable || field.Options[1].Value != factorio.ChannelExperimental {
+		t.Fatalf("channel options = %#v", field.Options)
+	}
+}
+
+func TestDecodeConfigurationDefaultsToStableChannelAndRejectsPinnedPatches(t *testing.T) {
+	configuration, err := factorio.DecodeConfiguration([]byte(`{"name":"Copper Works"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Channel != factorio.ChannelStable {
+		t.Fatalf("default channel = %q", configuration.Channel)
+	}
+	env, err := factorio.ConfigurationEnv(configuration)
+	if err != nil || env[factorio.ChannelEnv] != factorio.ChannelStable {
+		t.Fatalf("stable channel env = %#v err=%v", env, err)
+	}
+
+	experimental, err := factorio.DecodeConfiguration([]byte(`{"channel":"experimental","name":"Copper Works"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err = factorio.ConfigurationEnv(experimental)
+	if err != nil || env[factorio.ChannelEnv] != factorio.ChannelExperimental {
+		t.Fatalf("experimental channel env = %#v err=%v", env, err)
+	}
+
+	for _, raw := range []string{
+		`{"channel":"2.0.77","name":"Copper Works"}`,
+		`{"channel":"latest","name":"Copper Works"}`,
+		`{"channel":"","name":"Copper Works"}`,
+	} {
+		if _, err := factorio.DecodeConfiguration([]byte(raw)); err == nil {
+			t.Fatalf("expected pinned or unknown channel to be rejected: %s", raw)
+		}
+	}
+}
+
 func TestDecodeConfigurationRejectsUnknownFields(t *testing.T) {
 	_, err := factorio.DecodeConfiguration([]byte(`{"name":"Copper Works","futureSetting":true}`))
 	if err == nil {

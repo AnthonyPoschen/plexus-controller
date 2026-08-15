@@ -48,6 +48,15 @@ func RenderConfigFiles(configuration Configuration) (map[string]string, error) {
 	return map[string]string{ConfigFileName: string(append(rendered, '\n'))}, nil
 }
 
+// ConfigurationEnv maps the selected dedicated-server channel onto the
+// supervisor environment. Product config never pins a patch version.
+func ConfigurationEnv(configuration Configuration) (map[string]string, error) {
+	if err := configuration.Validate(); err != nil {
+		return nil, err
+	}
+	return map[string]string{ChannelEnv: configuration.Channel}, nil
+}
+
 // RuntimeSecretEnv copies decoded secrets into environment values. Plaintext
 // never belongs in a ConfigMap or status.
 func RuntimeSecretEnv(secrets Secrets) (map[string][]byte, error) {

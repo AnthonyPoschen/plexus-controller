@@ -5,6 +5,31 @@
   "configuration": {
     "sections": [
       {
+        "id": "channel",
+        "title": "Game channel",
+        "fields": [
+          {
+            "path": "channel",
+            "label": "Channel",
+            "description": "Update to the latest Factorio dedicated-server build of this channel when the container boots. Saves and mods stay on the hosted world volume.",
+            "type": "string",
+            "required": true,
+            "sensitive": false,
+            "default": "stable",
+            "options": [
+              {
+                "value": "stable",
+                "label": "Stable"
+              },
+              {
+                "value": "experimental",
+                "label": "Experimental"
+              }
+            ]
+          }
+        ]
+      },
+      {
         "id": "identity",
         "title": "Server details",
         "fields": [
