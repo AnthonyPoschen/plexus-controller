@@ -339,6 +339,7 @@ type exporterTermination struct {
 	Stage        string `json:"stage"`
 	ArchiveBytes int64  `json:"archiveBytes,omitempty"`
 	Message      string `json:"message,omitempty"`
+	Recovery     string `json:"recovery,omitempty"`
 }
 
 func (r *SaveExportReconciler) jobTerminationResult(ctx context.Context, job *batchv1.Job) (exporterTermination, bool) {
@@ -375,7 +376,7 @@ func validExportFailureStage(stage string) bool {
 }
 
 func validImportFailureStage(stage string) bool {
-	return stage == "download" || stage == "validation" || stage == "replace"
+	return stage == "download" || stage == "validation" || stage == "snapshot" || stage == "replace" || stage == "rollback"
 }
 
 func boundedDiagnostic(message string) string {

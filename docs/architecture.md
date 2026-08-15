@@ -70,9 +70,12 @@ immutable Secret reference for one expiring object-storage GET, a sanitized
 archive name, and an expiry—never a filesystem path or upload URL. The Job
 mounts only the adapter's `saves` PVC subpath writable plus an emptyDir
 workspace. It downloads the already-validated archive, validates it again,
-replaces only regular `*.zip` save archives in that directory, and never
-changes `desiredPower`. Failure diagnostics stay honest: they do not claim an
-automatic recovery snapshot. The Server remains Stopped.
+snapshots current regular `*.zip` archives into a reserved recovery directory,
+then replaces only those live archives. A failed replace restores the snapshot
+or reports `rollback-failed` so a recoverable copy remains. Retention keeps at
+most two recovery snapshots. The Job never changes `desiredPower`. Progress
+stages include snapshot and rollback, and success is recorded only after the
+replacement completes. The Server remains Stopped.
 
 While the Job runs, the exporter emits at most nine coarse JSON milestones for
 archive selection, validation, and upload. The controller samples only the

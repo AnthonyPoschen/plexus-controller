@@ -40,6 +40,15 @@ func TestSaveImportCreatesWritablePathScopedJobOnlyForFreshStoppedSetup(t *testi
 	if container.VolumeMounts[1].MountPath != "/work" {
 		t.Fatalf("import Job is missing a staging workspace: %#v", container.VolumeMounts)
 	}
+	foundImportID := false
+	for _, env := range container.Env {
+		if env.Name == "PLEXUS_SAVE_IMPORT_ID" && env.Value == replacement.Name {
+			foundImportID = true
+		}
+	}
+	if foundImportID == false {
+		t.Fatalf("import Job is missing a snapshot identity: %#v", container.Env)
+	}
 	if len(job.Spec.Template.Spec.Volumes) != 2 || job.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim == nil || job.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ReadOnly || job.Spec.Template.Spec.Volumes[1].EmptyDir == nil {
 		t.Fatalf("import Job volumes were not adapter-scoped: %#v", job.Spec.Template.Spec.Volumes)
 	}
@@ -72,13 +81,13 @@ func TestSaveImportRejectsDeletingGameServerBeforeCreatingJob(t *testing.T) {
 	}
 }
 
-func TestSaveImportCompletionLeavesServerStoppedAndDoesNotClaimSnapshot(t *testing.T) {
+func TestSaveImportCompletionLeavesServerStoppedAndRetainsSnapshot(t *testing.T) {
 	now := time.Date(2026, 8, 15, 4, 0, 0, 0, time.UTC)
 	scheme := saveExportTestScheme(t)
 	replacement, gameServer, secret := authorizedSaveImportFixtures(now)
 	controller := true
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: replacement.Name, Namespace: replacement.Namespace, UID: "job-uid", OwnerReferences: []metav1.OwnerReference{{APIVersion: "plexus.gg/v1alpha1", Kind: "SaveImport", Name: replacement.Name, UID: replacement.UID, Controller: &controller}}}, Status: batchv1.JobStatus{Succeeded: 1}}
-	pod := terminatedImporterPod(job, `{"stage":"complete","archiveBytes":12345}`)
+	pod := terminatedImporterPod(job, `{"stage":"complete","archiveBytes":12345,"recovery":"snapshot-created"}`)
 	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&plexusv1.SaveImport{}).WithObjects(replacement, gameServer, secret, job, pod).Build()
 	reconciler := SaveImportReconciler{Client: client, Scheme: scheme, ImporterImage: "registry.example/save-importer:v1", Now: func() time.Time { return now }}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: replacement.Namespace, Name: replacement.Name}}); err != nil {
@@ -88,11 +97,11 @@ func TestSaveImportCompletionLeavesServerStoppedAndDoesNotClaimSnapshot(t *testi
 	if err := client.Get(context.Background(), types.NamespacedName{Namespace: replacement.Namespace, Name: replacement.Name}, &observed); err != nil {
 		t.Fatal(err)
 	}
-	if observed.Status.Phase != plexusv1.SaveImportSucceeded || observed.Status.ArchiveBytes != 12345 || observed.Status.ProgressPercent != 100 || !strings.Contains(observed.Status.Message, "remains stopped") {
+	if observed.Status.Phase != plexusv1.SaveImportSucceeded || observed.Status.ArchiveBytes != 12345 || observed.Status.ProgressPercent != 100 || observed.Status.Recovery != "snapshot-created" {
 		t.Fatalf("successful replacement was not recorded honestly: %#v", observed.Status)
 	}
-	if strings.Contains(strings.ToLower(observed.Status.Message), "snapshot") {
-		t.Fatalf("success claimed a recovery snapshot: %q", observed.Status.Message)
+	if !strings.Contains(observed.Status.Message, "remains stopped") || !strings.Contains(observed.Status.Message, "recovery snapshot") {
+		t.Fatalf("success hid the retained recovery snapshot: %q", observed.Status.Message)
 	}
 	var server plexusv1.GameServer
 	if err := client.Get(context.Background(), types.NamespacedName{Namespace: gameServer.Namespace, Name: gameServer.Name}, &server); err != nil {
@@ -103,12 +112,12 @@ func TestSaveImportCompletionLeavesServerStoppedAndDoesNotClaimSnapshot(t *testi
 	}
 }
 
-func TestSaveImportFailureDoesNotClaimAutomaticRecoverySnapshot(t *testing.T) {
+func TestSaveImportFailureRestoresPreviousSave(t *testing.T) {
 	now := time.Date(2026, 8, 15, 4, 0, 0, 0, time.UTC)
 	replacement, gameServer, secret := authorizedSaveImportFixtures(now)
 	controller := true
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: replacement.Name, Namespace: replacement.Namespace, UID: types.UID(replacement.Name + "-job"), OwnerReferences: []metav1.OwnerReference{{APIVersion: "plexus.gg/v1alpha1", Kind: "SaveImport", Name: replacement.Name, UID: replacement.UID, Controller: &controller}}}, Status: batchv1.JobStatus{Failed: 1}}
-	pod := terminatedImporterPod(job, `{"stage":"replace","message":"safe diagnostic"}`)
+	pod := terminatedImporterPod(job, `{"stage":"replace","message":"safe diagnostic","recovery":"restored"}`)
 	client := fake.NewClientBuilder().WithScheme(saveExportTestScheme(t)).WithStatusSubresource(&plexusv1.SaveImport{}).WithObjects(replacement, gameServer, secret, job, pod).Build()
 	reconciler := SaveImportReconciler{Client: client, Scheme: saveExportTestScheme(t), ImporterImage: "registry.example/save-importer:v1", Now: func() time.Time { return now }}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: replacement.Namespace, Name: replacement.Name}}); err != nil {
@@ -118,11 +127,52 @@ func TestSaveImportFailureDoesNotClaimAutomaticRecoverySnapshot(t *testing.T) {
 	if err := client.Get(context.Background(), types.NamespacedName{Namespace: replacement.Namespace, Name: replacement.Name}, &observed); err != nil {
 		t.Fatal(err)
 	}
-	if observed.Status.Phase != plexusv1.SaveImportFailed || observed.Status.Stage != "replace" || !strings.Contains(observed.Status.Message, "safe diagnostic") {
-		t.Fatalf("stage failure was not retained safely: %#v", observed.Status)
+	if observed.Status.Phase != plexusv1.SaveImportFailed || observed.Status.Stage != "replace" || observed.Status.Recovery != "restored" || observed.Status.ProgressPercent == 100 {
+		t.Fatalf("restored failure claimed success or hid recovery: %#v", observed.Status)
 	}
-	if !strings.Contains(observed.Status.Message, "did not create an automatic recovery snapshot") {
-		t.Fatalf("failure implied automatic recovery: %q", observed.Status.Message)
+	if !strings.Contains(observed.Status.Message, "safe diagnostic") || !strings.Contains(observed.Status.Message, "restored from the automatic recovery snapshot") {
+		t.Fatalf("restored failure was not visible: %q", observed.Status.Message)
+	}
+}
+
+func TestSaveImportRollbackFailureKeepsRecoverableSnapshot(t *testing.T) {
+	now := time.Date(2026, 8, 15, 4, 0, 0, 0, time.UTC)
+	replacement, gameServer, secret := authorizedSaveImportFixtures(now)
+	controller := true
+	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: replacement.Name, Namespace: replacement.Namespace, UID: types.UID(replacement.Name + "-job"), OwnerReferences: []metav1.OwnerReference{{APIVersion: "plexus.gg/v1alpha1", Kind: "SaveImport", Name: replacement.Name, UID: replacement.UID, Controller: &controller}}}, Status: batchv1.JobStatus{Failed: 1}}
+	pod := terminatedImporterPod(job, `{"stage":"rollback","message":"copy failed","recovery":"rollback-failed"}`)
+	client := fake.NewClientBuilder().WithScheme(saveExportTestScheme(t)).WithStatusSubresource(&plexusv1.SaveImport{}).WithObjects(replacement, gameServer, secret, job, pod).Build()
+	reconciler := SaveImportReconciler{Client: client, Scheme: saveExportTestScheme(t), ImporterImage: "registry.example/save-importer:v1", Now: func() time.Time { return now }}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: replacement.Namespace, Name: replacement.Name}}); err != nil {
+		t.Fatal(err)
+	}
+	var observed plexusv1.SaveImport
+	if err := client.Get(context.Background(), types.NamespacedName{Namespace: replacement.Namespace, Name: replacement.Name}, &observed); err != nil {
+		t.Fatal(err)
+	}
+	if observed.Status.Phase != plexusv1.SaveImportFailed || observed.Status.Stage != "rollback" || observed.Status.Recovery != "rollback-failed" {
+		t.Fatalf("rollback failure was not recoverable: %#v", observed.Status)
+	}
+	if !strings.Contains(observed.Status.Message, "recoverable safety snapshot is retained") {
+		t.Fatalf("rollback failure hid the retained snapshot: %q", observed.Status.Message)
+	}
+}
+
+func TestSaveImportAuthorizationFailureDoesNotClaimSnapshot(t *testing.T) {
+	now := time.Date(2026, 8, 15, 4, 0, 0, 0, time.UTC)
+	replacement, gameServer, secret := authorizedSaveImportFixtures(now)
+	gameServer.Status.Phase = plexusv1.GameServerPhaseRunning
+	client := fake.NewClientBuilder().WithScheme(saveExportTestScheme(t)).WithStatusSubresource(&plexusv1.SaveImport{}, &plexusv1.GameServer{}).WithObjects(replacement, gameServer, secret).Build()
+	reconciler := SaveImportReconciler{Client: client, Scheme: saveExportTestScheme(t), ImporterImage: "registry.example/save-importer:v1", Now: func() time.Time { return now }}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: replacement.Namespace, Name: replacement.Name}}); err != nil {
+		t.Fatal(err)
+	}
+	var observed plexusv1.SaveImport
+	if err := client.Get(context.Background(), types.NamespacedName{Namespace: replacement.Namespace, Name: replacement.Name}, &observed); err != nil {
+		t.Fatal(err)
+	}
+	if observed.Status.Phase != plexusv1.SaveImportFailed || observed.Status.Recovery != "none" || observed.Status.ProgressPercent == 100 {
+		t.Fatalf("authorization failure claimed a snapshot or success: %#v", observed.Status)
 	}
 }
 

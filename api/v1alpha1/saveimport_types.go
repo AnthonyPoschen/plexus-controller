@@ -43,7 +43,10 @@ type SaveImportStatus struct {
 	// +kubebuilder:validation:Minimum=0
 	ArchiveBytes int64 `json:"archiveBytes,omitempty"`
 	// +kubebuilder:validation:MaxLength=512
-	Message    string       `json:"message,omitempty"`
+	Message string `json:"message,omitempty"`
+	// Recovery is a bounded recovery outcome, never a filesystem path.
+	// +kubebuilder:validation:Enum=none;snapshot-created;restored;rollback-failed
+	Recovery   string       `json:"recovery,omitempty"`
 	StartedAt  *metav1.Time `json:"startedAt,omitempty"`
 	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
 }
