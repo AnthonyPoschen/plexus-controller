@@ -1,1 +1,8 @@
 /bin/
+
+# `go build` / `go build ./cmd/...` at the repo root
+/manager
+/game-supervisor
+/save-exporter
+/save-importer
+
