@@ -73,6 +73,12 @@ docker-build: ## Build docker image with the manager.
 docker-push: ## Push docker image with the manager.
 	docker push ${IMG}
 
+FACTORIO_IMG ?= plexus-factorio:latest
+
+.PHONY: docker-build-factorio
+docker-build-factorio: ## Build the Plexus Factorio supervisor image.
+	docker build -f Dockerfile.factorio -t ${FACTORIO_IMG} .
+
 # Note:
 # CRD and deepcopy generation is handled via //go:generate directives.
 # Run `go generate ./...` to regenerate into kustomization/base/crds/.

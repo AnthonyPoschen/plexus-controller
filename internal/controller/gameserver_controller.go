@@ -740,6 +740,9 @@ func gracefulShutdownLifecycle(definition games.GameDefinition) (*corev1.Lifecyc
 		return nil, nil, fmt.Errorf("game %q has no supported graceful shutdown policy", definition.ID)
 	}
 	timeout := int64(policy.TimeoutSeconds)
+	if definition.Workload.Supervisor {
+		return nil, &timeout, nil
+	}
 	switch policy.Strategy {
 	case "rcon-command":
 		if policy.Command == "" {

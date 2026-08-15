@@ -49,6 +49,13 @@ make run
 
 The manager and website share one runtime contract: `PLEXUS_API_GROUP` (default `plexus.gg`) and `PLEXUS_RUNTIME_NAMESPACE` (default `app-plexus`). The compiled API version stays `v1alpha1`. Both processes refuse ready until `gameservers.<group>` serves that version. The controller cache and Role are namespace-scoped.
 
+The Factorio GameServer workload uses the Plexus supervisor image built from
+`Dockerfile.factorio` (`make docker-build-factorio`) and published from this
+repository as `ghcr.io/anthonyposchen/plexus-factorio`. GameDefinition points
+at that image, not `factoriotools/factorio`. The supervisor is PID 1: it boots
+the already-placed save, retries unexpected game-process exits in-pod, and
+runs the Factorio graceful stop sequence on SIGTERM.
+
 Managed Factorio export additionally requires publishing
 `Dockerfile.save-exporter` and setting `PLEXUS_SAVE_EXPORTER_IMAGE` on the
 controller manager to that immutable image reference. The backend supplies the
