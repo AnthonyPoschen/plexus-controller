@@ -61,6 +61,7 @@ func Schema() model.ManagementSchema {
 			{ID: "saves", Released: true, Description: "Validated save export and destructive hosted-save replacement."},
 			{ID: "console", Released: false, Description: "Interactive Factorio administration over RCON."},
 			{ID: "logs", Released: true, Description: "Read-only live container and Factorio log output."},
+			{ID: "broadcast", Released: true, Description: "In-game chat notices before restart or planned maintenance."},
 		},
 		Runtime: model.RuntimePolicy{Channels: []model.RuntimeChannel{
 			{ID: "rcon", Label: "Game console", Interaction: model.InteractionInteractive, Protocol: "rcon", Released: false},
@@ -80,6 +81,10 @@ func Schema() model.ManagementSchema {
 			Released: true, NativeDiscovery: false, DirectReference: true, DependencyResolution: "provider-metadata",
 			VersionSelection: "latest-compatible", Compatibility: "factorio-version", ApplyPolicy: "next-start",
 			RequiresStopped: true, AutomaticRestart: false, ClientSynchronization: "join-time",
+		},
+		Broadcast: model.BroadcastPolicy{
+			Released: true, Channel: model.BroadcastChannelChat, Protocol: "rcon",
+			MaximumMessageRunes: MaximumBroadcastMessageRunes, AutomaticRestart: false,
 		},
 	}
 }

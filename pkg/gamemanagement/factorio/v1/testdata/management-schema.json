@@ -273,6 +273,11 @@
       "id": "logs",
       "released": true,
       "description": "Read-only live container and Factorio log output."
+    },
+    {
+      "id": "broadcast",
+      "released": true,
+      "description": "In-game chat notices before restart or planned maintenance."
     }
   ],
   "runtime": {
@@ -341,5 +346,12 @@
     "requiresStopped": true,
     "automaticRestart": false,
     "clientSynchronization": "join-time"
+  },
+  "broadcast": {
+    "released": true,
+    "channel": "chat",
+    "protocol": "rcon",
+    "maximumMessageRunes": 240,
+    "automaticRestart": false
   }
 }

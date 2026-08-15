@@ -30,6 +30,7 @@ type ManagementSchema struct {
 	Shutdown      ShutdownPolicy      `json:"shutdown"`
 	Saves         SavePolicy          `json:"saves"`
 	Mods          ModProviderPolicy   `json:"mods"`
+	Broadcast     BroadcastPolicy     `json:"broadcast"`
 }
 
 type ConfigurationSchema struct {
@@ -128,4 +129,28 @@ type ModProviderPolicy struct {
 	RequiresStopped       bool   `json:"requiresStopped"`
 	AutomaticRestart      bool   `json:"automaticRestart"`
 	ClientSynchronization string `json:"clientSynchronization"`
+}
+
+type BroadcastChannel string
+
+const (
+	BroadcastChannelChat    BroadcastChannel = "chat"
+	BroadcastChannelConsole BroadcastChannel = "console"
+)
+
+// BroadcastPolicy is the adapter declaration for in-game maintenance notices.
+// An unsupported game leaves Released false and omits a channel.
+type BroadcastPolicy struct {
+	Released            bool             `json:"released"`
+	Channel             BroadcastChannel `json:"channel,omitempty"`
+	Protocol            string           `json:"protocol,omitempty"`
+	MaximumMessageRunes int              `json:"maximumMessageRunes,omitempty"`
+	AutomaticRestart    bool             `json:"automaticRestart"`
+}
+
+func (policy BroadcastPolicy) Supported() bool {
+	if policy.Released == false || policy.AutomaticRestart {
+		return false
+	}
+	return policy.Channel == BroadcastChannelChat || policy.Channel == BroadcastChannelConsole
 }

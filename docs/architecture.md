@@ -47,7 +47,10 @@ an unloaded Server is valid only with `spec.desiredPower: Stopped`.
   init container and reports the observed installed version only after the
   matching generation becomes available. Detected provider updates never
   increment restart generation or otherwise restart a GameServer; the adapter
-  policy is next-start with join-time client synchronization.
+  policy is next-start with join-time client synchronization. Factorio also
+  declares a chat broadcast channel so the backend can preview and send a
+  safe, attributed maintenance notice over RCON without changing desired
+  power.
   - On session end the controller tears down the editor pod.
 - This prevents live filesystem races, open file handle problems, and accidental corruption.
 
