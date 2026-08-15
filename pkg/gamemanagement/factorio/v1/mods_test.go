@@ -11,6 +11,16 @@ import (
 	"testing"
 )
 
+func TestFactorioModUpdatePolicyAppliesOnNextStartNeverAutomatically(t *testing.T) {
+	policy := Schema().Mods
+	if policy.ApplyPolicy != ModApplyPolicyNextStart || policy.AutomaticRestart || policy.ClientSynchronization != ModClientSyncJoinTime || policy.VersionSelection != "latest-compatible" {
+		t.Fatalf("Factorio update policy drifted: %#v", policy)
+	}
+	if ModUpdateCustomerMessage(true) != "Restart to apply" || ModUpdateCustomerMessage(false) != "Start to apply" {
+		t.Fatal("Factorio update messaging must stay policy-derived and restart-free")
+	}
+}
+
 func TestValidateModArchiveAcceptsMatchingProviderRelease(t *testing.T) {
 	release := testModRelease()
 	archive := testModArchive(t, release, map[string]string{"control.lua": "-- safe fixture"})

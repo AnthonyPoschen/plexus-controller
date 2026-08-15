@@ -18,6 +18,8 @@ const (
 	ModProviderID            = "factorio-mod-portal"
 	SupportedFactorioVersion = "2.0"
 	SupportedRuntimeVersion  = "2.0.77"
+	ModApplyPolicyNextStart  = "next-start"
+	ModClientSyncJoinTime    = "join-time"
 	ModArtifactDataKey       = "archive.zip"
 	ModProviderAnnotation    = "plexus.gg/mod-provider-id"
 	ModIDAnnotation          = "plexus.gg/mod-id"
@@ -40,6 +42,16 @@ type ModRelease struct {
 	Version       string
 	GameVersion   string
 	Dependencies  []string
+}
+
+// ModUpdateCustomerMessage is the Factorio adapter policy for a detected
+// provider update. Updates are applied on the next Start or customer Restart
+// and never restart a Server automatically.
+func ModUpdateCustomerMessage(runtimeRunning bool) string {
+	if runtimeRunning {
+		return "Restart to apply"
+	}
+	return "Start to apply"
 }
 
 // ValidateModRelease accepts the deliberately narrow first tracer: one
