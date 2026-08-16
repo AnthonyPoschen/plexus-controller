@@ -14,6 +14,10 @@ This controller is part of a two-repo system:
 
 **When working on anything related to provisioning, runtime, GameServer CRs, editor pods, ConfigMaps for games, or file management on disk, you must also consult the backend repository.**
 
+Dual-repo ticket orchestration reads the shared contract from the backend
+`.github/implement-tickets.json`. That file applies to every harness and
+work source. Do not invent a second contract here.
+
 Key backend documents to read:
 - `docs/game-deployment.md` — core architecture and the original recommendation for the CRD + controller model.
 - `docs/roadmap.md` — overall product phases.
@@ -29,6 +33,14 @@ Key backend documents to read:
 - Editor pods are temporary and must be reliably cleaned up.
 - Game-specific logic lives here (images, paths, probes, backup hooks, editor pod requirements). Keep it out of the backend.
 - Status in the CR is how we communicate runtime reality back to the backend dashboard.
+
+## Agent skills
+
+### Validate a change
+
+Load `.agents/skills/validate-change/SKILL.md` before treating a CRD or
+overlay change as done. Cluster-scoped kinds need a ClusterRoleBinding on
+the Flux tenant ServiceAccount in `../k8s/repos/plexus-controller.yaml`.
 
 ## Development Conventions
 
