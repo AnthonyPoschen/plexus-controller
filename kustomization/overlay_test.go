@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -131,8 +132,11 @@ func TestProdOverlayIncludesManagerDeployment(t *testing.T) {
 		t.Fatalf("containers = %#v", deploy.Spec.Template.Spec.Containers)
 	}
 	container := deploy.Spec.Template.Spec.Containers[0]
-	if container.Image != "ghcr.io/anthonyposchen/plexus-controller:latest" {
+	if !regexp.MustCompile(`^ghcr\.io/anthonyposchen/plexus-controller:master-[a-f0-9]{7}-[0-9]{14}$`).MatchString(container.Image) {
 		t.Fatalf("manager image = %q", container.Image)
+	}
+	if !strings.Contains(output, "name: docker-secret") {
+		t.Fatal("prod overlay must pull GHCR with docker-secret")
 	}
 	env := map[string]string{}
 	for _, item := range container.Env {

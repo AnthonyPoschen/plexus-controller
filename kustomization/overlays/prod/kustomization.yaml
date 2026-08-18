@@ -15,7 +15,7 @@ resources:
 images:
   - name: controller
     newName: ghcr.io/anthonyposchen/plexus-controller # {"$imagepolicy": "app-plexus-controller:plexus-controller:name"}
-    newTag: latest # {"$imagepolicy": "app-plexus-controller:plexus-controller:tag"}
+    newTag: master-45efb77-20260818142457 # {"$imagepolicy": "app-plexus-controller:plexus-controller:tag"}
 
 # The namespace transformer runs after patches. Copy the runtime namespace
 # from the cluster-scoped binding so Role/RoleBinding stay in app-plexus.

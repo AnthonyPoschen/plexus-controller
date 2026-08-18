@@ -18,6 +18,8 @@ spec:
         app.kubernetes.io/component: manager
     spec:
       serviceAccountName: plexus-controller
+      imagePullSecrets:
+        - name: docker-secret
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
