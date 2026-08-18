@@ -144,11 +144,14 @@ new accepted revision creates a new pod without changing the inputs visible to
 an old pod or to an old pod template that is restarted during rollout.
 
 Older revision-scoped ConfigMaps and runtime Secrets remain controller-owned
-while the GameServer exists. Stopping or unloading removes the Deployment and
-public Service but retains those inputs because Deployment deletion can race
-with terminating pods. The finalizer lists and deletes every owned revision
-before GameServer deletion; future pruning may remove revisions earlier only
-when no live or terminating pod can still reference them.
+while the GameServer exists. Stopping or unloading removes the Deployment but
+retains the Service and those inputs because published WAN ports stay assigned
+for the life of that Service, and Deployment deletion can race with terminating
+pods. The finalizer lists and deletes every owned revision before GameServer
+deletion; future pruning may remove revisions earlier only when no live or
+terminating pod can still reference them. Destroying the world deletes the
+Service. Switching games replaces it so the new game can receive new published
+endpoints.
 
 Before acknowledging a selected setup generation, the controller requires the
 same-namespace Secret to be immutable, labeled for that server, owner, game, and
@@ -156,8 +159,9 @@ setup, annotated with the pinned schema and a positive revision, and to contain
 exactly one `secrets.json` document accepted by the adapter decoder. Validation
 errors never include document contents. A missing or invalid replacement does
 not advance `status.observedGeneration`, allowing the backend to retain the
-previous Secret safely. Stopped intent still removes the workload and public
-Service before validation so a bad Secret cannot prevent shutdown.
+previous Secret safely. Stopped intent still removes the workload before
+validation so a bad Secret cannot prevent shutdown. The Service stays so
+published endpoints remain assigned.
 
 The backend switches the complete selected-setup configuration envelope in one
 GameServer patch: schema version, structured non-sensitive values, and the
@@ -372,7 +376,8 @@ after a controller restart. Pods created before the UID label was introduced
 are not force-deleted; normal Kubernetes ownership cleanup remains responsible
 for them. Restart uses a Recreate rollout so the old game process is shut
 down before its replacement starts. Stopped is reported only after the workload
-and Service are absent. Stable Running and Stopped observations are refreshed
+is absent. The Service is retained so published WAN ports stay assigned across
+stop, reboot, and pod recreate. Stable Running and Stopped observations are refreshed
 periodically so the backend can distinguish a healthy unchanged runtime from a
 stale controller observation.
 

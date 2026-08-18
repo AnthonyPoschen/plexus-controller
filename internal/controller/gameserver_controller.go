@@ -52,8 +52,8 @@ const (
 	observationRefreshInterval = 30 * time.Second
 )
 
-// GameServerReconciler turns Factorio GameServers into their persistent
-// storage, network service, and desired running or stopped workload.
+// GameServerReconciler turns GameServers into their persistent storage,
+// sticky network Service, and desired running or stopped workload.
 type GameServerReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -166,11 +166,7 @@ func (r *GameServerReconciler) quiesceBeforeSecretValidation(ctx context.Context
 	if err != nil {
 		return true, ctrl.Result{}, r.reportUnobservedFailure(ctx, gameServer, "WorkloadStopFailed", err)
 	}
-	serviceDeleted, err := r.deleteService(ctx, gameServer)
-	if err != nil {
-		return true, ctrl.Result{}, r.reportUnobservedFailure(ctx, gameServer, "ServiceCleanupFailed", err)
-	}
-	if deploymentDeleted == false && serviceDeleted == false {
+	if deploymentDeleted == false {
 		return false, ctrl.Result{}, nil
 	}
 	status := r.stoppingStatus(ctx, gameServer, fmt.Sprintf("Stopping the %s workload before validating sensitive configuration", definition.DisplayName))
@@ -327,6 +323,13 @@ func (r *GameServerReconciler) reconcileRunning(ctx context.Context, gameServer 
 	}
 	if _, err := r.ensureRuntimeSecret(ctx, gameServer, definition, secretEnv, secretRevision); err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "ConfigurationReconcileFailed", err)
+	}
+	replaced, err := r.replaceServiceIfGameChanged(ctx, gameServer)
+	if err != nil {
+		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "ServiceReconcileFailed", err)
+	}
+	if replaced {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 	service, err := r.ensureService(ctx, gameServer, definition)
 	if err != nil {
@@ -591,19 +594,21 @@ func (r *GameServerReconciler) reconcileStopped(ctx context.Context, gameServer 
 	if err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "WorkloadStopFailed", err)
 	}
-	serviceDeleted, err := r.deleteService(ctx, gameServer)
+	replaced, err := r.replaceServiceIfGameChanged(ctx, gameServer)
 	if err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "ServiceCleanupFailed", err)
 	}
-	if deleted || serviceDeleted {
+	if deleted {
 		status := r.stoppingStatus(ctx, gameServer, fmt.Sprintf("Stopping the %s workload; persistent storage is retained", definition.DisplayName))
 		preserveInstalledMods(&status, gameServer.Status)
 		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "WorkloadStopping", definition.DisplayName+" workload is being removed")
 		setCondition(&status, gameServer.Generation, conditionStorage, metav1.ConditionTrue, "PersistentVolumeReady", "Persistent game storage is retained")
-		setCondition(&status, gameServer.Generation, conditionEndpoint, metav1.ConditionFalse, "ServiceStopping", "Public endpoint is being removed")
 		if err := r.updateStatus(ctx, gameServer, status); err != nil {
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+	if replaced {
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
@@ -621,11 +626,7 @@ func (r *GameServerReconciler) reconcileUnloaded(ctx context.Context, gameServer
 	if err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "WorkloadStopFailed", err)
 	}
-	serviceDeleted, err := r.deleteService(ctx, gameServer)
-	if err != nil {
-		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "ServiceCleanupFailed", err)
-	}
-	if deleted || serviceDeleted {
+	if deleted {
 		status := observedStatus(gameServer, plexusv1alpha1.GameServerPhaseStopping, "Unloading the server workload; persistent storage is retained")
 		setCondition(&status, gameServer.Generation, conditionReady, metav1.ConditionFalse, "WorkloadStopping", "Runtime resources are being removed")
 		if err := r.updateStatus(ctx, gameServer, status); err != nil {
@@ -702,6 +703,23 @@ func (r *GameServerReconciler) ensureService(ctx context.Context, gameServer *pl
 		return nil
 	})
 	return service, err
+}
+
+// replaceServiceIfGameChanged deletes the owned Service when it belongs to a
+// different game. Published WAN ports stay assigned for the life of one Service
+// UID; a game switch therefore allocates new endpoints by replacing it.
+func (r *GameServerReconciler) replaceServiceIfGameChanged(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (bool, error) {
+	if gameServer.Spec.SelectedSetup == nil {
+		return false, nil
+	}
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: gameServer.Name, Namespace: gameServer.Namespace}}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(service), service); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	if service.Labels[plexusv1alpha1.LabelGameID] == gameServer.Spec.SelectedSetup.GameID {
+		return false, nil
+	}
+	return r.deleteService(ctx, gameServer)
 }
 
 func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer *plexusv1alpha1.GameServer, definition games.GameDefinition, configuration json.RawMessage, secretRevision int64) (*appsv1.Deployment, error) {

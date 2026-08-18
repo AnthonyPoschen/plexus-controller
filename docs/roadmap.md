@@ -41,8 +41,8 @@ Exit criteria:
 
 The first Factorio tracer now reconciles a Deployment, LoadBalancer Service,
 and persistent volume; reports Starting, Running, Stopping, Stopped, and Failed
-observations with periodic freshness updates; and removes the workload and
-public endpoint while retaining storage on stop. Factorio configuration
+observations with periodic freshness updates; and removes the workload while
+retaining the Service and storage on stop. Factorio configuration
 rendering is integrated. The published runtime is the Plexus Factorio
 supervisor image from this repository: the supervisor is PID 1, boots from
 disk, recovers unexpected process exits in-pod, and runs the adapter graceful
