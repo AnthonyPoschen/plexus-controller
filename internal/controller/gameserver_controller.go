@@ -781,6 +781,7 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 			},
 			Spec: corev1.PodSpec{
 				TerminationGracePeriodSeconds: terminationGracePeriod,
+				ImagePullSecrets:              ghcrImagePullSecrets(),
 				InitContainers:                initContainers,
 				Containers: []corev1.Container{{
 					Name:         workload.ContainerName,
@@ -796,6 +797,10 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 		return nil
 	})
 	return deployment, err
+}
+
+func ghcrImagePullSecrets() []corev1.LocalObjectReference {
+	return []corev1.LocalObjectReference{{Name: "docker-secret"}}
 }
 
 func gracefulShutdownLifecycle(definition games.GameDefinition) (*corev1.Lifecycle, *int64, error) {

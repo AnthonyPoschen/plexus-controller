@@ -213,6 +213,7 @@ func (r *GameServerReconciler) modDiskJobFor(gameServer *plexusv1alpha1.GameServ
 	job.Spec.BackoffLimit = &zero
 	job.Spec.Template.ObjectMeta.Labels = labels
 	job.Spec.Template.Spec.RestartPolicy = corev1.RestartPolicyNever
+	job.Spec.Template.Spec.ImagePullSecrets = ghcrImagePullSecrets()
 	job.Spec.Template.Spec.Containers = []corev1.Container{factorioModSyncContainer(gameServer, definition)}
 	job.Spec.Template.Spec.Volumes = append([]corev1.Volume{{
 		Name:         dataVolumeName,
