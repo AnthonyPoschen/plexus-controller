@@ -1,9 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-
 # Match the Flux tenant targetNamespace so local kustomize matches cluster apply.
 namespace: app-plexus-controller
-
 resources:
   - ../../base
   - ./serviceaccount.yaml
@@ -11,12 +9,10 @@ resources:
   - ./clusterrolebinding.yaml
   - ./deployment.yaml
   - ./image-automation.yaml
-
 images:
   - name: controller
     newName: ghcr.io/anthonyposchen/plexus-controller # {"$imagepolicy": "app-plexus-controller:plexus-controller:name"}
-    newTag: master-45efb77-20260818142457 # {"$imagepolicy": "app-plexus-controller:plexus-controller:tag"}
-
+    newTag: master-c5c7f0f-20260818152030 # {"$imagepolicy": "app-plexus-controller:plexus-controller:tag"}
 # The namespace transformer runs after patches. Copy the runtime namespace
 # from the cluster-scoped binding so Role/RoleBinding stay in app-plexus.
 replacements:
