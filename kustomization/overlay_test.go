@@ -86,6 +86,107 @@ func TestDevOverlayRewritesControllerRBAC(t *testing.T) {
 	if strings.Contains(output, "apiGroups:\n  - plexus.gg\n") {
 		t.Fatal("Dev Role still authorizes the production API group")
 	}
+	if documentKindNamed(output, "Deployment", "plexus-controller") != "" {
+		t.Fatal("Dev CRD overlay must not emit the manager Deployment")
+	}
+}
+
+func TestProdOverlayIncludesManagerDeployment(t *testing.T) {
+	output := kustomizeBuild(t, "overlays/prod")
+	deployDoc := documentKindNamed(output, "Deployment", "plexus-controller")
+	if deployDoc == "" {
+		t.Fatal("prod overlay must emit a plexus-controller Deployment")
+	}
+	var deploy struct {
+		Metadata struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
+		Spec struct {
+			Template struct {
+				Spec struct {
+					ServiceAccountName string `json:"serviceAccountName"`
+					Containers         []struct {
+						Name  string `json:"name"`
+						Image string `json:"image"`
+						Env   []struct {
+							Name  string `json:"name"`
+							Value string `json:"value"`
+						} `json:"env"`
+					} `json:"containers"`
+				} `json:"spec"`
+			} `json:"template"`
+		} `json:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(deployDoc), &deploy); err != nil {
+		t.Fatal(err)
+	}
+	if deploy.Metadata.Namespace != "app-plexus-controller" {
+		t.Fatalf("Deployment namespace = %q", deploy.Metadata.Namespace)
+	}
+	if deploy.Spec.Template.Spec.ServiceAccountName != "plexus-controller" {
+		t.Fatalf("serviceAccountName = %q", deploy.Spec.Template.Spec.ServiceAccountName)
+	}
+	if len(deploy.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("containers = %#v", deploy.Spec.Template.Spec.Containers)
+	}
+	container := deploy.Spec.Template.Spec.Containers[0]
+	if container.Image != "ghcr.io/anthonyposchen/plexus-controller:latest" {
+		t.Fatalf("manager image = %q", container.Image)
+	}
+	env := map[string]string{}
+	for _, item := range container.Env {
+		env[item.Name] = item.Value
+	}
+	if env["PLEXUS_API_GROUP"] != "plexus.gg" || env["PLEXUS_RUNTIME_NAMESPACE"] != "app-plexus" {
+		t.Fatalf("manager env = %#v", env)
+	}
+}
+
+func TestProdOverlayKeepsControllerRoleInRuntimeNamespace(t *testing.T) {
+	output := kustomizeBuild(t, "overlays/prod")
+	roleDoc := documentKindNamed(output, "Role", "plexus-controller")
+	if roleDoc == "" {
+		t.Fatal("prod overlay must still emit the namespace-scoped Role")
+	}
+	var role struct {
+		Metadata struct {
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
+	}
+	if err := yaml.Unmarshal([]byte(roleDoc), &role); err != nil {
+		t.Fatal(err)
+	}
+	if role.Metadata.Namespace != "app-plexus" {
+		t.Fatalf("Role namespace = %q, want app-plexus", role.Metadata.Namespace)
+	}
+
+	bindingDoc := documentKindNamed(output, "RoleBinding", "plexus-controller")
+	if bindingDoc == "" {
+		t.Fatal("prod overlay must emit a RoleBinding for the manager")
+	}
+	var binding struct {
+		Metadata struct {
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
+		Subjects []struct {
+			Kind      string `json:"kind"`
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"subjects"`
+	}
+	if err := yaml.Unmarshal([]byte(bindingDoc), &binding); err != nil {
+		t.Fatal(err)
+	}
+	if binding.Metadata.Namespace != "app-plexus" {
+		t.Fatalf("RoleBinding namespace = %q, want app-plexus", binding.Metadata.Namespace)
+	}
+	if len(binding.Subjects) != 1 || binding.Subjects[0].Kind != "ServiceAccount" || binding.Subjects[0].Name != "plexus-controller" || binding.Subjects[0].Namespace != "app-plexus-controller" {
+		t.Fatalf("RoleBinding subjects = %#v", binding.Subjects)
+	}
+	if documentKindNamed(output, "ClusterRoleBinding", "plexus-controller-crd-reader") == "" {
+		t.Fatal("prod overlay must bind the CRD reader ClusterRole")
+	}
 }
 
 func loadCRD(t *testing.T, rel string) apiextensionsv1.CustomResourceDefinition {
@@ -117,6 +218,36 @@ func crdNamed(t *testing.T, output string, name string) apiextensionsv1.CustomRe
 	}
 	t.Fatalf("CRD %s not found in kustomize output", name)
 	return apiextensionsv1.CustomResourceDefinition{}
+}
+
+func documentKindNamed(output string, kind string, name string) string {
+	for _, document := range strings.Split(output, "\n---\n") {
+		if yamlKind(document) != kind {
+			continue
+		}
+		var meta struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(document), &meta); err != nil {
+			continue
+		}
+		if meta.Metadata.Name == name {
+			return document
+		}
+	}
+	return ""
+}
+
+func yamlKind(document string) string {
+	for _, line := range strings.Split(document, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "kind:") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "kind:"))
+		}
+	}
+	return ""
 }
 
 func kustomizeBuild(t *testing.T, path string) string {

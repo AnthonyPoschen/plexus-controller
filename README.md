@@ -49,6 +49,12 @@ make run
 
 The manager and website share one runtime contract: `PLEXUS_API_GROUP` (default `plexus.gg`) and `PLEXUS_RUNTIME_NAMESPACE` (default `app-plexus`). The compiled API version stays `v1alpha1`. Both processes refuse ready until `gameservers.<group>` serves that version. The controller cache and Role are namespace-scoped. Dev Flux applies `kustomization/overlays/dev`, which rewrites the generated CRD to `gameservers.dev.plexus.gg` without claiming the shared `gs` shortName.
 
+Production Flux applies `kustomization/overlays/prod`. That overlay ships the
+manager Deployment, ServiceAccount, and RoleBinding. The manager image is
+built from `Dockerfile` (`make docker-build`) and published as
+`ghcr.io/anthonyposchen/plexus-controller`. The pod runs in
+`app-plexus-controller` and watches GameServers in `app-plexus`.
+
 The Factorio GameServer workload uses the Plexus supervisor image built from
 `Dockerfile.factorio` (`make docker-build-factorio`) and published from this
 repository as `ghcr.io/anthonyposchen/plexus-factorio`. GameDefinition points

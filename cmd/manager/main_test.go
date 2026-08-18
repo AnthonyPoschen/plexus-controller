@@ -91,6 +91,20 @@ func TestControllerRBACIsNamespaceScoped(t *testing.T) {
 	}
 }
 
+func TestManagerDockerfileBuildsControllerBinary(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if !strings.Contains(body, "go build -mod=vendor") || !strings.Contains(body, "./cmd/manager") {
+		t.Fatal("Dockerfile must build the vendored manager binary")
+	}
+	if !strings.Contains(body, `ENTRYPOINT ["/manager"]`) {
+		t.Fatal("Dockerfile must run the manager as PID 1")
+	}
+}
+
 func loadRewrittenGameServerCRD(t *testing.T, group string) *apiextensionsv1.CustomResourceDefinition {
 	t.Helper()
 	manifest, err := os.ReadFile(filepath.Join("..", "..", "kustomization", "base", "crds", "plexus.gg_gameservers.yaml"))

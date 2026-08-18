@@ -97,4 +97,6 @@ install: ## Install CRDs (run `go generate` first if needed).
 uninstall: ## Uninstall CRDs.
 	kubectl delete -f kustomization/base/crds/
 
-# Add real deploy/undeploy targets once you have a full base deployment.
+.PHONY: deploy
+deploy: ## Apply the production overlay (CRDs, RBAC, manager Deployment).
+	kubectl apply -k kustomization/overlays/prod

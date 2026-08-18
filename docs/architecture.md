@@ -114,6 +114,11 @@ free-form diagnostics.
 
 The controller reconciles `GameServer` resources in a runtime API group that defaults to `plexus.gg`. `PLEXUS_API_GROUP` may select a different group (Dev or a slot) while the compiled version stays `v1alpha1`. Both the website and controller watch a single namespace from `PLEXUS_RUNTIME_NAMESPACE` and refuse ready until `gameservers.<group>` serves that compiled version.
 
+Production Flux applies `kustomization/overlays/prod` into
+`app-plexus-controller`. The manager Deployment runs there, binds the
+namespace-scoped Role in `app-plexus`, and pulls
+`ghcr.io/anthonyposchen/plexus-controller`.
+
 Key responsibilities of the CR:
 
 - Carry stable Server identity and ownership (server ID, owner user, and compute

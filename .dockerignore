@@ -1,0 +1,11 @@
+.git
+bin
+/manager
+/game-supervisor
+/save-exporter
+/save-importer
+cover.out
+*.md
+docs
+.github
+.agents

@@ -32,6 +32,9 @@ For the overall product direction and why we chose the CRD + separate controller
 - Dockerfile + basic Makefile.
 - CI (lint + build).
 - Initial `docs/` with architecture, roadmap, and strong cross-links back to the backend repo.
+- Prod overlay ships a manager Deployment. CI publishes
+  `ghcr.io/anthonyposchen/plexus-controller` with
+  `master-<sha>-<timestamp>` tags for Flux ImagePolicy.
 
 Exit criteria:
 - Controller can be deployed to a cluster (even if it does nothing useful yet).

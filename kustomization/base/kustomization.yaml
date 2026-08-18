@@ -7,9 +7,5 @@ resources:
   - ./role.yaml
   - ./crd-reader.yaml
 
-  # Controller deployment and role binding will be added here
-  # - ./deployment.yaml
-  # - ./serviceaccount.yaml
-  # - ./clusterrole.yaml
-  # - ./clusterrolebinding.yaml
-  # - ./service.yaml (for metrics, if exposed)
+  # Manager Deployment, ServiceAccount, RoleBinding, and ClusterRoleBinding
+  # live in overlays/prod so the Dev CRD overlay does not run a manager.

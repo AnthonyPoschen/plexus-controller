@@ -3,18 +3,16 @@ apiVersion: image.toolkit.fluxcd.io/v1
 kind: ImageRepository
 metadata:
   name: plexus-controller
-  namespace: app-plexus   # or your target namespace for the controller
+  namespace: app-plexus-controller
 spec:
   image: ghcr.io/anthonyposchen/plexus-controller
   interval: 1m
-  # secretRef:
-  #   name: docker-secret
 ---
 apiVersion: image.toolkit.fluxcd.io/v1
 kind: ImagePolicy
 metadata:
   name: plexus-controller
-  namespace: app-plexus
+  namespace: app-plexus-controller
 spec:
   imageRepositoryRef:
     name: plexus-controller
@@ -29,12 +27,12 @@ apiVersion: image.toolkit.fluxcd.io/v1
 kind: ImageUpdateAutomation
 metadata:
   name: plexus-controller
-  namespace: app-plexus
+  namespace: app-plexus-controller
 spec:
   interval: 1m
   sourceRef:
     kind: GitRepository
-    name: app-plexus   # adjust to your GitRepository name
+    name: app-plexus-controller
     namespace: flux-system
   git:
     checkout:

@@ -1,14 +1,41 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# Match the Flux tenant targetNamespace so local kustomize matches cluster apply.
+namespace: app-plexus-controller
+
 resources:
   - ../../base
-  # Add secrets, image overrides, etc. here when ready
-  # - ./controller-secret.yaml
-  # - ./image-automation.yaml
+  - ./serviceaccount.yaml
+  - ./rolebinding.yaml
+  - ./clusterrolebinding.yaml
+  - ./deployment.yaml
+  - ./image-automation.yaml
 
-# Example image override (will be managed by Flux image automation)
-# images:
-#   - name: controller
-#     newName: ghcr.io/anthonyposchen/plexus-controller
-#     newTag: latest
+images:
+  - name: controller
+    newName: ghcr.io/anthonyposchen/plexus-controller # {"$imagepolicy": "app-plexus-controller:plexus-controller:name"}
+    newTag: latest # {"$imagepolicy": "app-plexus-controller:plexus-controller:tag"}
+
+# The namespace transformer runs after patches. Copy the runtime namespace
+# from the cluster-scoped binding so Role/RoleBinding stay in app-plexus.
+replacements:
+  - source:
+      kind: ClusterRoleBinding
+      name: plexus-controller-crd-reader
+      fieldPath: metadata.annotations.[plexus.gg/runtime-namespace]
+    targets:
+      - select:
+          kind: Role
+          name: plexus-controller
+        fieldPaths:
+          - metadata.namespace
+        options:
+          create: true
+      - select:
+          kind: RoleBinding
+          name: plexus-controller
+        fieldPaths:
+          - metadata.namespace
+        options:
+          create: true
