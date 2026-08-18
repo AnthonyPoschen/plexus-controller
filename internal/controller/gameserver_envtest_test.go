@@ -109,5 +109,6 @@ func TestFactorioRunningStoppedEnvtest(t *testing.T) {
 	if err := kubeClient.Get(ctx, request.NamespacedName, &deployment); !apierrors.IsNotFound(err) {
 		t.Fatalf("envtest stopped Deployment lookup error = %v, want NotFound", err)
 	}
+	get(t, ctx, kubeClient, request.NamespacedName, &corev1.Service{})
 	get(t, ctx, kubeClient, request.NamespacedName, &corev1.PersistentVolumeClaim{})
 }

@@ -199,8 +199,13 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 		t.Fatalf("stopped Deployment lookup error = %v, want NotFound", err)
 	}
 	get(t, ctx, kubeClient, request.NamespacedName, &pvc)
-	if err := kubeClient.Get(ctx, request.NamespacedName, &service); !apierrors.IsNotFound(err) {
-		t.Fatalf("stopped Service lookup error = %v, want NotFound", err)
+	var stoppedService corev1.Service
+	get(t, ctx, kubeClient, request.NamespacedName, &stoppedService)
+	if stoppedService.UID != service.UID {
+		t.Fatalf("stopped Service UID = %q, want retained %q", stoppedService.UID, service.UID)
+	}
+	if len(stoppedService.Spec.Ports) != 2 || stoppedService.Spec.Ports[0].Port != 34197 {
+		t.Fatalf("stopped Service ports = %#v", stoppedService.Spec.Ports)
 	}
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-config-g1"}, &configMap)
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-runtime-g1-r1"}, &corev1.Secret{})
@@ -826,6 +831,7 @@ func TestFactorioUnloadedServerRetainsRevisionInputsUntilDeletion(t *testing.T) 
 	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("unloaded Deployment lookup error = %v, want NotFound", err)
 	}
+	get(t, ctx, kubeClient, request.NamespacedName, &corev1.Service{})
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-config-g1"}, &corev1.ConfigMap{})
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: "factorio-1-runtime-g1-r1"}, &corev1.Secret{})
 }
@@ -933,6 +939,7 @@ func TestFactorioRestartWaitsForTheReplacementDeploymentRevision(t *testing.T) {
 	if current.Status.Phase != plexusv1alpha1.GameServerPhaseRunning || current.Status.ObservedRestartGeneration != 1 {
 		t.Fatalf("replacement deployment was not acknowledged: %#v", current.Status)
 	}
+	get(t, ctx, kubeClient, request.NamespacedName, &corev1.Service{})
 }
 
 func TestFactorioReconcileRejectsInvalidStructuredConfiguration(t *testing.T) {
@@ -1539,6 +1546,131 @@ func TestFactorioReconcileRejectsUnownedRuntimeResource(t *testing.T) {
 	}
 }
 
+func TestStopKeepsServiceAndDeleteRemovesIt(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	reconciler, kubeClient := testReconciler(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var service corev1.Service
+	get(t, ctx, kubeClient, request.NamespacedName, &service)
+	service.UID = "sticky-service-uid"
+	if err := kubeClient.Update(ctx, &service); err != nil {
+		t.Fatal(err)
+	}
+	service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{Hostname: "factorio.example.test"}}
+	if err := kubeClient.Status().Update(ctx, &service); err != nil {
+		t.Fatal(err)
+	}
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	current.Spec.DesiredPower = plexusv1alpha1.DesiredPowerStopped
+	current.Generation++
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStopped {
+		t.Fatalf("stopped phase = %q, want Stopped", current.Status.Phase)
+	}
+	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("stopped Deployment lookup error = %v, want NotFound", err)
+	}
+	var stoppedService corev1.Service
+	get(t, ctx, kubeClient, request.NamespacedName, &stoppedService)
+	if stoppedService.UID != "sticky-service-uid" {
+		t.Fatalf("stop replaced Service UID = %q", stoppedService.UID)
+	}
+
+	current.Spec.RestartGeneration++
+	current.Spec.DesiredPower = plexusv1alpha1.DesiredPowerRunning
+	current.Generation++
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	var restartedService corev1.Service
+	get(t, ctx, kubeClient, request.NamespacedName, &restartedService)
+	if restartedService.UID != "sticky-service-uid" {
+		t.Fatalf("restart replaced Service UID = %q", restartedService.UID)
+	}
+
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	if err := kubeClient.Delete(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	reconcileOnce(t, ctx, reconciler, request)
+	if err := kubeClient.Get(ctx, request.NamespacedName, &corev1.Service{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("deleted GameServer left Service: %v", err)
+	}
+}
+
+func TestGameSwitchReplacesService(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	reconciler, kubeClient := testReconciler(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var service corev1.Service
+	get(t, ctx, kubeClient, request.NamespacedName, &service)
+	service.UID = "factorio-service-uid"
+	if err := kubeClient.Update(ctx, &service); err != nil {
+		t.Fatal(err)
+	}
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	current.Spec.DesiredPower = plexusv1alpha1.DesiredPowerStopped
+	current.Generation++
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTwice(t, ctx, reconciler, request)
+	get(t, ctx, kubeClient, request.NamespacedName, &service)
+	if service.UID != "factorio-service-uid" {
+		t.Fatalf("stop before game switch replaced Service UID = %q", service.UID)
+	}
+
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	current.Spec.SelectedSetup.GameID = zomboid.GameID
+	current.Spec.SelectedSetup.ID = "setup-zomboid"
+	current.Spec.SelectedSetup.Configuration.SchemaVersion = zomboid.SchemaVersion
+	current.Spec.SelectedSetup.Configuration.SecretRef.Name = "setup-zomboid-secrets"
+	current.Spec.SelectedSetup.Configuration.Values.Raw = []byte(`{}`)
+	current.Generation++
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	zomboidSecret := testSetupSecret(t, current)
+	if err := kubeClient.Create(ctx, zomboidSecret); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTwice(t, ctx, reconciler, request)
+	if err := kubeClient.Get(ctx, request.NamespacedName, &corev1.Service{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("game switch left the previous Service: %v", err)
+	}
+
+	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	current.Spec.DesiredPower = plexusv1alpha1.DesiredPowerRunning
+	current.Generation++
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, ctx, reconciler, request)
+	var replacement corev1.Service
+	get(t, ctx, kubeClient, request.NamespacedName, &replacement)
+	if replacement.UID == "factorio-service-uid" {
+		t.Fatal("game switch reused the previous Service UID")
+	}
+	if replacement.Labels[plexusv1alpha1.LabelGameID] != zomboid.GameID || len(replacement.Spec.Ports) != 2 || replacement.Spec.Ports[0].Port != 16261 {
+		t.Fatalf("replacement Service = %#v", replacement)
+	}
+}
+
 func TestGameServerDeletionCleansUpOwnedRuntimeResources(t *testing.T) {
 	ctx := context.Background()
 	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
@@ -1670,6 +1802,7 @@ func TestProjectZomboidReconcileRunningThenStopped(t *testing.T) {
 	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("expected Deployment removal, got %v", err)
 	}
+	get(t, ctx, kubeClient, request.NamespacedName, &corev1.Service{})
 	get(t, ctx, kubeClient, request.NamespacedName, &corev1.PersistentVolumeClaim{})
 }
 
