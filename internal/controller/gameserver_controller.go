@@ -1241,7 +1241,29 @@ func environment(definition games.GameDefinition, configuration json.RawMessage,
 			}},
 		})
 	}
+	if definition.Workload.PlatformSteamcmd {
+		environment = append(environment, platformSteamcmdEnv()...)
+	}
 	return environment, nil
+}
+
+func platformSteamcmdEnv() []corev1.EnvVar {
+	optional := true
+	return []corev1.EnvVar{
+		secretEnv(games.SteamUsernameEnv, games.SteamcmdSecretName, games.SteamcmdSecretUsernameKey, optional),
+		secretEnv(games.SteamPasswordEnv, games.SteamcmdSecretName, games.SteamcmdSecretPasswordKey, optional),
+	}
+}
+
+func secretEnv(name, secret, key string, optional bool) corev1.EnvVar {
+	return corev1.EnvVar{
+		Name: name,
+		ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: secret},
+			Key:                  key,
+			Optional:             &optional,
+		}},
+	}
 }
 
 func protocol(value string) corev1.Protocol {

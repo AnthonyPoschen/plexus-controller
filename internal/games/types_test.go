@@ -29,6 +29,15 @@ func TestFactorioUsesPlexusSupervisorImage(t *testing.T) {
 	if !definition.Workload.Supervisor {
 		t.Fatal("Factorio workload must run the Plexus supervisor as PID 1")
 	}
+	if !definition.Workload.PlatformSteamcmd {
+		t.Fatal("Factorio workload must mount the platform SteamCMD secret")
+	}
+	if SteamcmdSecretName != "plexus-steamcmd" || SteamcmdSecretUsernameKey != "username" || SteamcmdSecretPasswordKey != "password" {
+		t.Fatalf("SteamCMD secret contract = %s keys %s/%s", SteamcmdSecretName, SteamcmdSecretUsernameKey, SteamcmdSecretPasswordKey)
+	}
+	if SteamUsernameEnv != "STEAM_USERNAME" || SteamPasswordEnv != "STEAM_PASSWORD" {
+		t.Fatalf("SteamCMD env contract = %s/%s", SteamUsernameEnv, SteamPasswordEnv)
+	}
 }
 
 func TestFactorioDockerfilePinsSupportedRuntime(t *testing.T) {

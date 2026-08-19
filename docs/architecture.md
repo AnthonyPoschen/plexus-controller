@@ -289,6 +289,22 @@ The backend catalog only needs high-level marketing + "recommended offering" dat
 
 See `internal/games/types.go` for the current structure (including `CalculateDiskSize` and `ConfigLayer` templates).
 
+### Platform SteamCMD credentials
+
+Steam updates use one Plexus-owned Steam account that owns the dedicated-server
+app licenses we ship. They are not customer Factorio.com listing credentials
+(`USERNAME` / `TOKEN`) and never belong in a GameServer spec or setup Secret.
+
+| Item | Value |
+| --- | --- |
+| Secret name | `plexus-steamcmd` |
+| Namespace | same as the GameServer / game pod (`app-plexus` in prod) |
+| Secret keys | `username`, `password` |
+| Pod env | `STEAM_USERNAME`, `STEAM_PASSWORD` |
+| Required | no; `SecretKeyRef.optional=true` |
+
+When the Secret is present, the supervisor runs `steamcmd +login $STEAM_USERNAME $STEAM_PASSWORD` then `app_update` for the selected channel (`stable` / `experimental` for Factorio; later Steam games reuse the same login and supply their own app id + branch). When the Secret is missing, steamcmd is not invoked as `anonymous` for paid apps. A failed or skipped update still boots the image seed if that binary exists. Seal the Secret with `make generate_steamcmd-secret` in the cluster repo (`STEAMCMD_ENV`, output `overlay/prod/secrets/steamcmd.yaml`).
+
 ### Shared management contracts
 
 Versioned customer-management contracts live under `pkg/gamemanagement/` so
@@ -329,7 +345,8 @@ truth without exposing container details. The runtime image is the
 Plexus-owned Factorio supervisor image. It may ship a seed dedicated-server
 patch; product configuration exposes only `stable` and `experimental` channels,
 and boot updates `/opt/factorio` to the latest Steam build of the selected
-channel. Hosted saves and mods stay on the PVC. Desired selection
+channel using platform SteamCMD credentials. Hosted saves and mods stay on the
+PVC. Desired selection
 alone never becomes an installed observation. Bounded Secret staging supports this thin
 tracer only. Larger artifacts remain assigned to the future object-storage and
 managed editor/job path.
@@ -366,9 +383,11 @@ Running is reported only after the Deployment controller has observed the
 current revision, an updated replica is available, and its public endpoint is
 assigned. Every Factorio pod runs the Plexus game supervisor as PID 1. The
 supervisor updates Factorio game files to the latest build of the selected
-channel, then boots the already-materialized save, config, and mods from disk,
-retries unexpected game-process exits in-pod, then exits so Kubernetes can
-reschedule. It does not watch or reconcile the GameServer CR. SIGTERM runs the
+channel with the platform SteamCMD account, then boots the already-materialized
+save, config, and mods from disk, retries unexpected game-process exits in-pod,
+then exits so Kubernetes can reschedule. A failed steamcmd update still boots
+the image seed at `/opt/factorio/bin/x64/factorio` when that binary exists. It
+does not watch or reconcile the GameServer CR. SIGTERM runs the
 adapter's `rcon /quit` sequence inside the 90-second grace period; exit 0 is
 graceful, and a Kubernetes SIGKILL is not. Desired power Stopped removes the
 pod. Current Graceful stop intent is not dependent on the mode used when the

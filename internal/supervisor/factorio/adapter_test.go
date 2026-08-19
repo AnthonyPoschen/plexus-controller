@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -98,16 +99,85 @@ func TestUpdateOnBootAppliesSelectedChannel(t *testing.T) {
 	}
 }
 
+func TestUpdateOnBootBootsSeedWhenPlatformSecretIsMissing(t *testing.T) {
+	paths := testPaths(t)
+	if err := os.WriteFile(paths.Binary, []byte("seed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var called bool
+	adapter := Adapter{
+		Paths: paths,
+		Updater: SteamcmdUpdater{
+			LookupEnv: mapEnv(nil),
+			Command: func(_ context.Context, _ string, _ ...string) *exec.Cmd {
+				called = true
+				return exec.Command("true")
+			},
+		},
+	}
+	if err := adapter.UpdateOnBoot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("missing platform secret must not run steamcmd")
+	}
+}
+
+func TestUpdateOnBootBootsSeedWhenSteamcmdFails(t *testing.T) {
+	paths := testPaths(t)
+	if err := os.WriteFile(paths.Binary, []byte("seed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeSettings(t, paths.SettingsFile, `{"name":"Copper Works"}`)
+	if err := os.WriteFile(filepath.Join(paths.SavesDir, "world.zip"), []byte("save"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	updater := &recordingUpdater{err: errString("Failed to install app '427520' (Missing configuration)")}
+	adapter := Adapter{
+		Paths:     paths,
+		LookupEnv: mapEnv(map[string]string{"RCON_PASSWORD": "supersecretpassword"}),
+		Updater:   updater,
+	}
+	if err := adapter.UpdateOnBoot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if updater.calls != 1 {
+		t.Fatalf("failed update should still be attempted once, calls=%d", updater.calls)
+	}
+	cmd, err := adapter.Command(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Path != paths.Binary && (len(cmd.Args) == 0 || cmd.Args[0] != paths.Binary) {
+		t.Fatalf("seed boot command = %#v", cmd)
+	}
+}
+
+func TestUpdateOnBootFailsWhenSeedBinaryIsMissing(t *testing.T) {
+	paths := testPaths(t)
+	updater := &recordingUpdater{err: errString("Failed to install app '427520' (Missing configuration)")}
+	adapter := Adapter{Paths: paths, Updater: updater}
+	err := adapter.UpdateOnBoot(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "427520") {
+		t.Fatalf("missing seed after failed update = %v", err)
+	}
+}
+
 type recordingUpdater struct {
 	calls   int
 	channel string
+	err     error
 }
 
 func (u *recordingUpdater) Update(_ context.Context, channel string) error {
 	u.calls++
 	u.channel = channel
-	return nil
+	return u.err
 }
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
 
 func TestCommandRequiresHostedSaveAndRCONPassword(t *testing.T) {
 	paths := testPaths(t)
@@ -225,6 +295,15 @@ func mapEnv(values map[string]string) func(string) (string, bool) {
 func containsArgs(args []string, key, value string) bool {
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func containsArg(args []string, value string) bool {
+	for _, arg := range args {
+		if arg == value {
 			return true
 		}
 	}
