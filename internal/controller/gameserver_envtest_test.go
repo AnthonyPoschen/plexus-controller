@@ -75,7 +75,7 @@ func TestFactorioRunningStoppedEnvtest(t *testing.T) {
 	reconcileTwice(t, ctx, reconciler, request)
 
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	var service corev1.Service
 	get(t, ctx, kubeClient, request.NamespacedName, &service)
 	get(t, ctx, kubeClient, request.NamespacedName, &corev1.PersistentVolumeClaim{})
@@ -106,7 +106,7 @@ func TestFactorioRunningStoppedEnvtest(t *testing.T) {
 	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStopped {
 		t.Fatalf("envtest stopped phase = %q", current.Status.Phase)
 	}
-	if err := kubeClient.Get(ctx, request.NamespacedName, &deployment); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &deployment); !apierrors.IsNotFound(err) {
 		t.Fatalf("envtest stopped Deployment lookup error = %v, want NotFound", err)
 	}
 	get(t, ctx, kubeClient, request.NamespacedName, &corev1.Service{})

@@ -152,7 +152,11 @@ Older revision-scoped ConfigMaps and runtime Secrets remain controller-owned
 while the GameServer exists. Stopping or unloading removes the Deployment but
 retains the Service and those inputs because published WAN ports stay assigned
 for the life of that Service, and Deployment deletion can race with terminating
-pods. The finalizer lists and deletes every owned revision before GameServer
+pods. The Deployment `metadata.name` is `<customer>-<server>-<game>` from the
+published customer slug, Server display name, and game ID. Kubernetes may
+append a ReplicaSet suffix. GameServer, PVC, and Service names stay on
+`spec.serverID`. A slug collision fails the reconcile instead of adding a
+disambiguating hash. The finalizer lists and deletes every owned revision before GameServer
 deletion; future pruning may remove revisions earlier only when no live or
 terminating pod can still reference them. Destroying the world deletes the
 Service. Switching games replaces it so the new game can receive new published

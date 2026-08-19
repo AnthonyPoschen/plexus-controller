@@ -337,7 +337,11 @@ func (r *GameServerReconciler) reconcileRunning(ctx context.Context, gameServer 
 	}
 	deployment, err := r.ensureDeployment(ctx, gameServer, definition, configuration, secretRevision)
 	if err != nil {
-		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "WorkloadReconcileFailed", err)
+		reason := "WorkloadReconcileFailed"
+		if isWorkloadNameCollision(err) {
+			return ctrl.Result{RequeueAfter: observationRefreshInterval}, r.reportPermanentFailure(ctx, gameServer, "WorkloadNameCollision", err)
+		}
+		return ctrl.Result{}, r.reportFailure(ctx, gameServer, reason, err)
 	}
 	if failure, err := r.workloadFailure(ctx, gameServer, definition, deployment); err != nil {
 		return ctrl.Result{}, r.reportFailure(ctx, gameServer, "WorkloadObservationFailed", err)
@@ -755,7 +759,14 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 	for _, mount := range workload.AdditionalMounts {
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{Name: mount.Name, MountPath: mount.MountPath, SubPath: mount.SubPath})
 	}
-	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: gameServer.Name, Namespace: gameServer.Namespace}}
+	name, err := workloadDeploymentName(gameServer)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.ensureWorkloadNameAvailable(ctx, gameServer, name); err != nil {
+		return nil, err
+	}
+	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: gameServer.Namespace}}
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
 		if deployment.ResourceVersion != "" {
 			if err := ensureControlledBy(gameServer, deployment); err != nil {
@@ -796,7 +807,13 @@ func (r *GameServerReconciler) ensureDeployment(ctx context.Context, gameServer 
 		}
 		return nil
 	})
-	return deployment, err
+	if err != nil {
+		return deployment, err
+	}
+	if err := r.deleteStaleWorkloadDeployments(ctx, gameServer, name); err != nil {
+		return deployment, err
+	}
+	return deployment, nil
 }
 
 func ghcrImagePullSecrets() []corev1.LocalObjectReference {
@@ -853,12 +870,20 @@ func (r *GameServerReconciler) reconcileDelete(ctx context.Context, gameServer *
 	}
 
 	remaining := false
-	for _, object := range []client.Object{
-		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: gameServer.Name, Namespace: gameServer.Namespace}},
+	deployments, err := r.ownedWorkloadDeployments(ctx, gameServer)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	var owned []client.Object
+	for i := range deployments {
+		owned = append(owned, &deployments[i])
+	}
+	owned = append(owned,
 		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: gameServer.Name, Namespace: gameServer.Namespace}},
 		&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: diskJobName(gameServer), Namespace: gameServer.Namespace}},
 		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: gameServer.Name, Namespace: gameServer.Namespace}},
-	} {
+	)
+	for _, object := range owned {
 		exists, err := r.deleteOwnedObject(ctx, gameServer, object)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -951,25 +976,25 @@ func (r *GameServerReconciler) deleteOwnedObject(ctx context.Context, gameServer
 }
 
 func (r *GameServerReconciler) deleteDeployment(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (bool, error) {
-	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: gameServer.Name, Namespace: gameServer.Namespace}}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(deployment), deployment); err != nil {
-		if client.IgnoreNotFound(err) != nil {
-			return false, err
-		}
-		return r.forceDeletePods(ctx, gameServer)
-	}
-	if err := ensureControlledBy(gameServer, deployment); err != nil {
+	deployments, err := r.ownedWorkloadDeployments(ctx, gameServer)
+	if err != nil {
 		return false, err
 	}
-	if deployment.DeletionTimestamp.IsZero() {
-		if err := r.Delete(ctx, deployment); err != nil {
+	remaining := false
+	for i := range deployments {
+		exists, err := r.deleteOwnedObject(ctx, gameServer, &deployments[i])
+		if err != nil {
+			return remaining, err
+		}
+		remaining = remaining || exists
+	}
+	if remaining {
+		if _, err := r.forceDeletePods(ctx, gameServer); err != nil {
 			return true, err
 		}
+		return true, nil
 	}
-	if _, err := r.forceDeletePods(ctx, gameServer); err != nil {
-		return true, err
-	}
-	return true, nil
+	return r.forceDeletePods(ctx, gameServer)
 }
 
 func (r *GameServerReconciler) forceDeletePods(ctx context.Context, gameServer *plexusv1alpha1.GameServer) (bool, error) {
@@ -1104,8 +1129,12 @@ func shutdownStartedAt(ctx context.Context, kubeClient client.Client, gameServer
 	if gameServer.Spec.SelectedSetup == nil {
 		return time.Time{}
 	}
+	name := gameServer.Name
+	if workloadName, err := workloadDeploymentName(gameServer); err == nil {
+		name = workloadName
+	}
 	deployment := &appsv1.Deployment{}
-	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(gameServer), deployment); err != nil {
+	if err := kubeClient.Get(ctx, client.ObjectKey{Namespace: gameServer.Namespace, Name: name}, deployment); err != nil {
 		return time.Time{}
 	}
 	if deployment.DeletionTimestamp.IsZero() {
