@@ -64,6 +64,7 @@ type GameServerReconciler struct {
 // +kubebuilder:rbac:groups=plexus.gg,resources=gameservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=plexus.gg,resources=gameservers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=list;delete
 // +kubebuilder:rbac:groups="",resources=services;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;delete
