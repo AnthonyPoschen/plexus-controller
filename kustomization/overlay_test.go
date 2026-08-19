@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"sigs.k8s.io/yaml"
 )
@@ -87,6 +88,17 @@ func TestDevOverlayRewritesControllerRBAC(t *testing.T) {
 	if strings.Contains(output, "apiGroups:\n  - plexus.gg\n") {
 		t.Fatal("Dev Role still authorizes the production API group")
 	}
+	roleDoc := documentKindNamed(output, "Role", "plexus-controller")
+	if roleDoc == "" {
+		t.Fatal("Dev overlay must emit the namespace-scoped Role")
+	}
+	var role rbacv1.Role
+	if err := yaml.Unmarshal([]byte(roleDoc), &role); err != nil {
+		t.Fatal(err)
+	}
+	if !roleAllows(role, "apps", "replicasets", "get", "list", "watch") {
+		t.Fatalf("Dev Role missing ReplicaSet get/list/watch:\n%s", roleDoc)
+	}
 	if documentKindNamed(output, "Deployment", "plexus-controller") != "" {
 		t.Fatal("Dev CRD overlay must not emit the manager Deployment")
 	}
@@ -153,16 +165,15 @@ func TestProdOverlayKeepsControllerRoleInRuntimeNamespace(t *testing.T) {
 	if roleDoc == "" {
 		t.Fatal("prod overlay must still emit the namespace-scoped Role")
 	}
-	var role struct {
-		Metadata struct {
-			Namespace string `json:"namespace"`
-		} `json:"metadata"`
-	}
+	var role rbacv1.Role
 	if err := yaml.Unmarshal([]byte(roleDoc), &role); err != nil {
 		t.Fatal(err)
 	}
-	if role.Metadata.Namespace != "app-plexus" {
-		t.Fatalf("Role namespace = %q, want app-plexus", role.Metadata.Namespace)
+	if role.Namespace != "app-plexus" {
+		t.Fatalf("Role namespace = %q, want app-plexus", role.Namespace)
+	}
+	if !roleAllows(role, "apps", "replicasets", "get", "list", "watch") {
+		t.Fatalf("prod Role missing ReplicaSet get/list/watch:\n%s", roleDoc)
 	}
 
 	bindingDoc := documentKindNamed(output, "RoleBinding", "plexus-controller")
@@ -274,6 +285,21 @@ func containsString(values []string, target string) bool {
 		if value == target {
 			return true
 		}
+	}
+	return false
+}
+
+func roleAllows(role rbacv1.Role, apiGroup, resource string, verbs ...string) bool {
+	for _, rule := range role.Rules {
+		if !containsString(rule.APIGroups, apiGroup) || !containsString(rule.Resources, resource) {
+			continue
+		}
+		for _, verb := range verbs {
+			if !containsString(rule.Verbs, verb) && !containsString(rule.Verbs, "*") {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }

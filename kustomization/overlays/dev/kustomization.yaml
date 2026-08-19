@@ -58,13 +58,13 @@ patches:
       name: plexus-controller
     patch: |-
       - op: replace
-        path: /rules/6/apiGroups/0
-        value: dev.plexus.gg
-      - op: replace
         path: /rules/7/apiGroups/0
         value: dev.plexus.gg
       - op: replace
         path: /rules/8/apiGroups/0
+        value: dev.plexus.gg
+      - op: replace
+        path: /rules/9/apiGroups/0
         value: dev.plexus.gg
   - target:
       group: rbac.authorization.k8s.io
