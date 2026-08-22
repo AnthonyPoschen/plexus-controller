@@ -87,7 +87,7 @@ func TestGeneratedCRDMatchesGameServerContract(t *testing.T) {
 
 	root := crd.Spec.Versions[0].Schema.OpenAPIV3Schema
 	spec := root.Properties["spec"]
-	wantSpecFields := []string{"computePlanID", "desiredPower", "highPerformance", "location", "ownerUserID", "region", "restartGeneration", "selectedSetup", "serverID", "shutdownMode"}
+	wantSpecFields := []string{"computePlanID", "customerSlug", "desiredPower", "displayName", "highPerformance", "location", "ownerUserID", "region", "restartGeneration", "selectedSetup", "serverID", "shutdownMode"}
 	if got := sortedPropertyNames(spec.Properties); !reflect.DeepEqual(got, wantSpecFields) {
 		t.Fatalf("spec fields = %v, want %v", got, wantSpecFields)
 	}

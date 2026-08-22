@@ -59,8 +59,17 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	}
 
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	assertOwnedAndLabeled(t, gameServer, &deployment)
+	if deployment.Name != "uuser-1-server-factorio" {
+		t.Fatalf("deployment name = %q, want uuser-1-server-factorio", deployment.Name)
+	}
+	if deployment.Name == gameServer.Name || strings.Contains(deployment.Name, gameServer.Spec.ServerID) {
+		t.Fatalf("deployment name reused GameServer or server identity: %q", deployment.Name)
+	}
+	if pvc.Name != gameServer.Name || service.Name != gameServer.Name {
+		t.Fatalf("PVC/Service names must stay on the GameServer identity, got pvc=%q service=%q", pvc.Name, service.Name)
+	}
 	if deployment.Spec.Template.Spec.Containers[0].Image != factorio.RuntimeImage {
 		t.Fatalf("Factorio image = %q", deployment.Spec.Template.Spec.Containers[0].Image)
 	}
@@ -195,7 +204,7 @@ func TestFactorioReconcileRunningThenStopped(t *testing.T) {
 	if conditionReason(current, conditionReady) != "DesiredStopped" {
 		t.Fatalf("stopped Ready condition = %#v", current.Status.Conditions)
 	}
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("stopped Deployment lookup error = %v, want NotFound", err)
 	}
 	get(t, ctx, kubeClient, request.NamespacedName, &pvc)
@@ -223,7 +232,7 @@ func TestFactorioModArtifactIsInstalledByDiskJobBeforeWorkload(t *testing.T) {
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
 	reconcileTwice(t, ctx, reconciler, request)
 
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("game supervisor was scheduled before the disk job finished: %v", err)
 	}
 	var job batchv1.Job
@@ -250,7 +259,7 @@ func TestFactorioModArtifactIsInstalledByDiskJobBeforeWorkload(t *testing.T) {
 		t.Fatalf("disk job installed mods = %#v", current.Status.InstalledMods)
 	}
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	if len(deployment.Spec.Template.Spec.InitContainers) != 1 || deployment.Spec.Template.Spec.InitContainers[0].Name != "factorio-config-init" {
 		t.Fatalf("supervisor should not remount mods after the disk job: %#v", deployment.Spec.Template.Spec.InitContainers)
 	}
@@ -266,7 +275,7 @@ func TestFactorioModRemovalClearsArchiveThroughDiskJob(t *testing.T) {
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
 	reconcileTwice(t, ctx, reconciler, request)
 
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("game supervisor was scheduled before mod removal finished: %v", err)
 	}
 	var job batchv1.Job
@@ -289,7 +298,7 @@ func TestFactorioModRemovalClearsArchiveThroughDiskJob(t *testing.T) {
 	if len(current.Status.InstalledMods) != 0 || current.Status.InstalledModsGeneration != 2 {
 		t.Fatalf("disk job mod-free observation = %#v", current.Status)
 	}
-	get(t, ctx, kubeClient, request.NamespacedName, &appsv1.Deployment{})
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{})
 }
 
 func TestFactorioWorkloadFailuresPreserveFailureTruth(t *testing.T) {
@@ -308,7 +317,7 @@ func TestFactorioWorkloadFailuresPreserveFailureTruth(t *testing.T) {
 			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
 			reconcileTwice(t, ctx, reconciler, request)
 			var deployment appsv1.Deployment
-			get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+			get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 			if test.name == "zero mods ordinary rollout" {
 				deployment.Status.Conditions = []appsv1.DeploymentCondition{{Type: appsv1.DeploymentReplicaFailure, Status: corev1.ConditionTrue, Reason: "FailedCreate", Message: "provider-secret-token"}}
 				if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
@@ -336,7 +345,7 @@ func TestStoppedServerRunsOneManagedDiskJobThatExits(t *testing.T) {
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
 	reconcileTwice(t, ctx, reconciler, request)
 
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("stopped server scheduled a game supervisor: %v", err)
 	}
 	var job batchv1.Job
@@ -360,7 +369,7 @@ func TestStoppedServerRunsOneManagedDiskJobThatExits(t *testing.T) {
 	if err := kubeClient.Get(ctx, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("successful disk job was retained: %v", err)
 	}
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("stopped server started a supervisor after the job: %v", err)
 	}
 	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
@@ -389,7 +398,7 @@ func TestStartDuringManagedDiskJobShowsStartingAndDoesNotScheduleSupervisor(t *t
 	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStarting || current.Status.Message != "Applying Factorio mods" {
 		t.Fatalf("start during job status = %#v", current.Status)
 	}
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("supervisor scheduled while the disk job still holds the PVC: %v", err)
 	}
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &batchv1.Job{})
@@ -412,7 +421,7 @@ func TestStopDuringManagedDiskJobLeavesJobAndDoesNotStartSupervisor(t *testing.T
 	reconcileOnce(t, ctx, reconciler, request)
 
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &batchv1.Job{})
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("stop during job scheduled a supervisor: %v", err)
 	}
 	current = getGameServer(t, ctx, kubeClient, request.NamespacedName)
@@ -430,7 +439,7 @@ func TestStopDuringManagedDiskJobLeavesJobAndDoesNotStartSupervisor(t *testing.T
 		t.Fatal(err)
 	}
 	reconcileOnce(t, ctx, reconciler, request)
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("supervisor started after stop once the job finished: %v", err)
 	}
 }
@@ -457,7 +466,7 @@ func TestManagedDiskJobFailureYieldsFailedAndNoSupervisor(t *testing.T) {
 	if strings.Contains(current.Status.Message, "secret") {
 		t.Fatalf("failure leaked sensitive detail: %q", current.Status.Message)
 	}
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("failed disk job still scheduled a supervisor: %v", err)
 	}
 	get(t, ctx, kubeClient, client.ObjectKey{Namespace: gameServer.Namespace, Name: diskJobName(gameServer)}, &job)
@@ -479,7 +488,7 @@ func TestStartWaitsForSaveImportJobBeforeSchedulingSupervisor(t *testing.T) {
 	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStarting || current.Status.Message != pendingWorkApplyingSave {
 		t.Fatalf("start during save import status = %#v", current.Status)
 	}
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("supervisor scheduled while save import holds the PVC: %v", err)
 	}
 }
@@ -540,7 +549,7 @@ func TestFactorioStopUsesCurrentShutdownMode(t *testing.T) {
 			reconcileTwice(t, ctx, reconciler, request)
 
 			var deployment appsv1.Deployment
-			get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+			get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 			container := deployment.Spec.Template.Spec.Containers[0]
 			if container.Lifecycle != nil {
 				t.Fatalf("running %s pod should not encode Factorio shutdown in PreStop, got %#v", test.runningMode, container.Lifecycle)
@@ -595,7 +604,7 @@ func TestFactorioForceEscalatesAnInProgressGracefulStop(t *testing.T) {
 	reconcileTwice(t, ctx, reconciler, request)
 
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	deployment.Finalizers = []string{"test.plexus.gg/hold-deletion"}
 	if err := kubeClient.Update(ctx, &deployment); err != nil {
 		t.Fatal(err)
@@ -612,7 +621,7 @@ func TestFactorioForceEscalatesAnInProgressGracefulStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconcileOnce(t, ctx, reconciler, request)
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	if deployment.DeletionTimestamp.IsZero() {
 		t.Fatal("Graceful stop did not begin Deployment deletion")
 	}
@@ -643,7 +652,7 @@ func TestGracefulStopReportsTakingLongerAfterAdapterTimeout(t *testing.T) {
 	reconcileTwice(t, ctx, reconciler, request)
 
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	deployment.Finalizers = []string{"test.plexus.gg/hold-deletion"}
 	if err := kubeClient.Update(ctx, &deployment); err != nil {
 		t.Fatal(err)
@@ -696,7 +705,7 @@ func TestGracefulStopTimeoutSurvivesControllerRecovery(t *testing.T) {
 	reconcileTwice(t, ctx, first, request)
 
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	deployment.Finalizers = []string{"test.plexus.gg/hold-deletion"}
 	if err := kubeClient.Update(ctx, &deployment); err != nil {
 		t.Fatal(err)
@@ -828,7 +837,7 @@ func TestFactorioUnloadedServerRetainsRevisionInputsUntilDeletion(t *testing.T) 
 	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStopped {
 		t.Fatalf("unloaded phase = %q, want Stopped", current.Status.Phase)
 	}
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("unloaded Deployment lookup error = %v, want NotFound", err)
 	}
 	get(t, ctx, kubeClient, request.NamespacedName, &corev1.Service{})
@@ -864,7 +873,7 @@ func TestFactorioReconcileReportsFailedForInvalidSchema(t *testing.T) {
 	if current.Status.ObservedGeneration != 3 || !strings.Contains(current.Status.Message, "factorio/v1") {
 		t.Fatalf("unsupported schema status is not actionable: %#v", current.Status)
 	}
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("invalid setup Deployment lookup error = %v, want NotFound", err)
 	}
 }
@@ -877,7 +886,7 @@ func TestFactorioRestartWaitsForTheReplacementDeploymentRevision(t *testing.T) {
 	reconcileTwice(t, ctx, reconciler, request)
 
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	var service corev1.Service
 	get(t, ctx, kubeClient, request.NamespacedName, &service)
 	service.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{Hostname: "factorio.example.test"}}
@@ -903,7 +912,7 @@ func TestFactorioRestartWaitsForTheReplacementDeploymentRevision(t *testing.T) {
 	if err := kubeClient.Update(ctx, current); err != nil {
 		t.Fatal(err)
 	}
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	deployment.Generation = 2
 	deployment.Status.ObservedGeneration = 1
 	deployment.Status.Replicas = 2
@@ -917,7 +926,7 @@ func TestFactorioRestartWaitsForTheReplacementDeploymentRevision(t *testing.T) {
 	}
 	reconcileOnce(t, ctx, reconciler, request)
 
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	if deployment.Spec.Template.Annotations["plexus.gg/restart-generation"] != "1" {
 		t.Fatalf("replacement pod template restart generation = %#v", deployment.Spec.Template.Annotations)
 	}
@@ -926,7 +935,7 @@ func TestFactorioRestartWaitsForTheReplacementDeploymentRevision(t *testing.T) {
 		t.Fatalf("old available pod acknowledged Restart: %#v", current.Status)
 	}
 
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	deployment.Status.ObservedGeneration = deployment.Generation
 	deployment.Status.Replicas = 1
 	deployment.Status.UpdatedReplicas = 1
@@ -967,7 +976,10 @@ func TestFactorioReconcileRejectsInvalidStructuredConfiguration(t *testing.T) {
 	if current.Status.ObservedGeneration != 4 || !strings.Contains(current.Status.Message, "maxPlayers") {
 		t.Fatalf("invalid configuration acknowledgement = %#v", current.Status)
 	}
-	for _, object := range []client.Object{&appsv1.Deployment{}, &corev1.ConfigMap{}, &corev1.Secret{}} {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("invalid configuration created Deployment: %v", err)
+	}
+	for _, object := range []client.Object{&corev1.ConfigMap{}, &corev1.Secret{}} {
 		if err := kubeClient.Get(ctx, request.NamespacedName, object); !apierrors.IsNotFound(err) {
 			t.Fatalf("invalid configuration created %T: %v", object, err)
 		}
@@ -994,7 +1006,7 @@ func TestFactorioReconcileReportsSecretMigrationFailureWithoutDisclosure(t *test
 	if !strings.Contains(current.Status.Message, factorio.SecretSchemaVersion) || strings.Contains(current.Status.Message, "must-not-appear") {
 		t.Fatalf("Secret migration status is unsafe or not actionable: %q", current.Status.Message)
 	}
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("Secret migration failure created a workload: %v", err)
 	}
 }
@@ -1015,7 +1027,7 @@ func TestFactorioRunningStatusAcknowledgesActiveConfigurationAndSecretRevision(t
 
 	reconcileTwice(t, ctx, reconciler, request)
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	if deployment.Spec.Template.Annotations["plexus.gg/configuration-generation"] != "9" || deployment.Spec.Template.Annotations[factorio.SecretRevisionAnnotation] != "4" {
 		t.Fatalf("workload revision annotations = %#v", deployment.Spec.Template.Annotations)
 	}
@@ -1043,7 +1055,7 @@ func TestFactorioRunningStatusAcknowledgesActiveConfigurationAndSecretRevision(t
 		t.Fatalf("pending rollout lifecycle status = %#v, result=%#v", pending.Status, result)
 	}
 
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	deployment.Status.ObservedGeneration = deployment.Generation
 	deployment.Status.Replicas = 1
 	deployment.Status.UpdatedReplicas = 1
@@ -1110,7 +1122,7 @@ func TestFactorioRolloutDoesNotAcknowledgeUntilOnlyUpdatedReplicaIsAvailable(t *
 
 	reconcileTwice(t, ctx, reconciler, request)
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	deployment.Status.ObservedGeneration = deployment.Generation
 	deployment.Status.Replicas = 2
 	deployment.Status.UpdatedReplicas = 1
@@ -1125,7 +1137,7 @@ func TestFactorioRolloutDoesNotAcknowledgeUntilOnlyUpdatedReplicaIsAvailable(t *
 		t.Fatalf("rollout with an extra old replica acknowledged replacement inputs: %#v", current.Status)
 	}
 
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	deployment.Status.Replicas = 1
 	if err := kubeClient.Status().Update(ctx, &deployment); err != nil {
 		t.Fatal(err)
@@ -1154,7 +1166,7 @@ func TestFactorioRolloutKeepsPreviousPodTemplatePinnedToImmutableInputs(t *testi
 
 	reconcileTwice(t, ctx, reconciler, request)
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	previousTemplate := deployment.Spec.Template.DeepCopy()
 	deployment.Status.ObservedGeneration = deployment.Generation
 	deployment.Status.Replicas = 1
@@ -1175,12 +1187,12 @@ func TestFactorioRolloutKeepsPreviousPodTemplatePinnedToImmutableInputs(t *testi
 	if err := kubeClient.Create(ctx, replacement); err != nil {
 		t.Fatal(err)
 	}
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	deployment.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RollingUpdateDeploymentStrategyType}
 	if err := kubeClient.Update(ctx, &deployment); err != nil {
 		t.Fatal(err)
 	}
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	deployment.Status.ObservedGeneration = 0
 	deployment.Status.UpdatedReplicas = 0
 	deployment.Status.AvailableReplicas = 1
@@ -1199,7 +1211,7 @@ func TestFactorioRolloutKeepsPreviousPodTemplatePinnedToImmutableInputs(t *testi
 	reconcileOnce(t, ctx, reconciler, request)
 
 	assertPodTemplateRuntimeInputs(t, previousTemplate, "factorio-1-config-g8", "factorio-1-runtime-g8-r3")
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	if deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
 		t.Fatalf("configuration rollout strategy = %q, want Recreate to prevent overlapping PVC writers", deployment.Spec.Strategy.Type)
 	}
@@ -1329,7 +1341,7 @@ func TestFactorioStoppedEditIsAcknowledgedAndNextStartRendersExactEnvelope(t *te
 		t.Fatalf("runtime Secret data did not use the replacement setup Secret: %#v", runtimeSecret.Data)
 	}
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	assertPodTemplateRuntimeInputs(t, &deployment.Spec.Template, "factorio-1-config-g3", "factorio-1-runtime-g3-r2")
 }
 
@@ -1380,7 +1392,7 @@ func TestFactorioReconcileRendersCustomConfigurationAndSecretBackedEnvironment(t
 	}
 
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	container := deployment.Spec.Template.Spec.Containers[0]
 	if env := findEnvironment(container.Env, factorio.ChannelEnv); env == nil || env.Value != factorio.ChannelStable {
 		t.Fatalf("default Factorio channel environment = %#v", env)
@@ -1413,7 +1425,7 @@ func TestFactorioChannelDesiredStateReachesSupervisorEnvironment(t *testing.T) {
 	reconcileTwice(t, ctx, reconciler, request)
 
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	env := findEnvironment(deployment.Spec.Template.Spec.Containers[0].Env, factorio.ChannelEnv)
 	if env == nil || env.Value != factorio.ChannelExperimental {
 		t.Fatalf("experimental channel environment = %#v", env)
@@ -1576,7 +1588,7 @@ func TestStopKeepsServiceAndDeleteRemovesIt(t *testing.T) {
 	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStopped {
 		t.Fatalf("stopped phase = %q, want Stopped", current.Status.Phase)
 	}
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("stopped Deployment lookup error = %v, want NotFound", err)
 	}
 	var stoppedService corev1.Service
@@ -1700,7 +1712,10 @@ func TestGameServerDeletionCleansUpOwnedRuntimeResources(t *testing.T) {
 	reconcileOnce(t, ctx, reconciler, request)
 	reconcileOnce(t, ctx, reconciler, request)
 
-	for _, object := range []client.Object{&appsv1.Deployment{}, &corev1.Service{}, &corev1.PersistentVolumeClaim{}} {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("deleted GameServer left Deployment: %v", err)
+	}
+	for _, object := range []client.Object{&corev1.Service{}, &corev1.PersistentVolumeClaim{}} {
 		if err := kubeClient.Get(ctx, request.NamespacedName, object); !apierrors.IsNotFound(err) {
 			t.Fatalf("deleted GameServer left %T: %v", object, err)
 		}
@@ -1741,7 +1756,7 @@ func TestProjectZomboidReconcileRunningThenStopped(t *testing.T) {
 	}
 
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	container := deployment.Spec.Template.Spec.Containers[0]
 	if container.Name != zomboid.GameID || container.Image != "docker.io/renegademaster/zomboid-dedicated-server:"+zomboid.SupportedImageTag {
 		t.Fatalf("Project Zomboid container = %#v", container)
@@ -1799,7 +1814,7 @@ func TestProjectZomboidReconcileRunningThenStopped(t *testing.T) {
 	if current.Status.Phase != plexusv1alpha1.GameServerPhaseStopped {
 		t.Fatalf("stopped status = %#v", current.Status)
 	}
-	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+	if err := kubeClient.Get(ctx, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("expected Deployment removal, got %v", err)
 	}
 	get(t, ctx, kubeClient, request.NamespacedName, &corev1.Service{})
@@ -1819,7 +1834,7 @@ func TestProjectZomboidWorkshopSelectionAppliesAtStartupWithoutArtifact(t *testi
 	reconcileTwice(t, ctx, reconciler, request)
 
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	if len(deployment.Spec.Template.Spec.InitContainers) != 1 || deployment.Spec.Template.Spec.InitContainers[0].Name != "zomboid-config-init" {
 		t.Fatalf("Project Zomboid Workshop must not add an artifact init: %#v", deployment.Spec.Template.Spec.InitContainers)
 	}
@@ -1861,7 +1876,7 @@ func TestProjectZomboidWorkshopRemovalClearsStartupEnv(t *testing.T) {
 	reconcileTwice(t, ctx, reconciler, request)
 
 	var deployment appsv1.Deployment
-	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
 	env := envMap(deployment.Spec.Template.Spec.Containers[0].Env)
 	if env[zomboid.WorkshopItemsEnv] != "" || env[zomboid.WorkshopModNamesEnv] != "" {
 		t.Fatalf("removed Workshop selection left startup env: %#v", env)
@@ -1874,6 +1889,123 @@ func envMap(values []corev1.EnvVar) map[string]string {
 		env[value.Name] = value.Value
 	}
 	return env
+}
+
+func TestWorkloadNameCollisionFailsWithoutHash(t *testing.T) {
+	ctx := context.Background()
+	first := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	first.Spec.CustomerSlug = "zanven42"
+	first.Spec.DisplayName = "Test"
+	first.UID = "first-uid"
+	second := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	second.Name = "server-2"
+	second.Spec.ServerID = "server-2"
+	second.Spec.CustomerSlug = "zanven42"
+	second.Spec.DisplayName = "Test"
+	second.Spec.SelectedSetup.ID = "setup-2"
+	second.Spec.SelectedSetup.Configuration.SecretRef.Name = "setup-2-secrets"
+	second.UID = "second-uid"
+	reconciler, kubeClient := testReconciler(t, first, second)
+
+	reconcileTwice(t, ctx, reconciler, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(first)})
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, first), &deployment)
+	if deployment.Name != "zanven42-test-factorio" {
+		t.Fatalf("first deployment name = %q", deployment.Name)
+	}
+
+	secondRequest := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(second)}
+	reconcileTwice(t, ctx, reconciler, secondRequest)
+	current := getGameServer(t, ctx, kubeClient, secondRequest.NamespacedName)
+	if current.Status.Phase != plexusv1alpha1.GameServerPhaseFailed || conditionReason(current, conditionReady) != "WorkloadNameCollision" {
+		t.Fatalf("collision status = %#v", current.Status)
+	}
+	if !strings.Contains(current.Status.Message, "zanven42-test-factorio") {
+		t.Fatalf("collision message = %q", current.Status.Message)
+	}
+	if err := kubeClient.Get(ctx, client.ObjectKeyFromObject(second), &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("collision created a hashed or UUID-named Deployment: %v", err)
+	}
+}
+
+func TestReadableWorkloadNameAdoptsLegacyUUIDDeployment(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	gameServer.Spec.CustomerSlug = "zanven42@gmail.com"
+	gameServer.Spec.DisplayName = "Test"
+	controlled := true
+	legacy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      gameServer.Name,
+			Namespace: gameServer.Namespace,
+			UID:       "legacy-deployment-uid",
+			Labels:    childLabels(gameServer),
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: plexusv1alpha1.GroupVersion.String(), Kind: "GameServer",
+				Name: gameServer.Name, UID: gameServer.UID, Controller: &controlled,
+			}},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: selectorLabels(gameServer)},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: selectorLabels(gameServer)},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "game", Image: "example"}}},
+			},
+		},
+	}
+	reconciler, kubeClient := testReconciler(t, gameServer, legacy)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &deployment)
+	if deployment.Name != "zanven42-test-factorio" {
+		t.Fatalf("adopted deployment name = %q", deployment.Name)
+	}
+	if err := kubeClient.Get(ctx, request.NamespacedName, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("legacy UUID Deployment still present: %v", err)
+	}
+	var pvc corev1.PersistentVolumeClaim
+	get(t, ctx, kubeClient, request.NamespacedName, &pvc)
+	if pvc.Name != gameServer.Name {
+		t.Fatalf("adopt renamed PVC to %q", pvc.Name)
+	}
+}
+
+func TestDisplayNameChangeRenamesDeploymentAndKeepsPVC(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	gameServer.Spec.CustomerSlug = "zanven42"
+	gameServer.Spec.DisplayName = "Test"
+	reconciler, kubeClient := testReconciler(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var pvc corev1.PersistentVolumeClaim
+	get(t, ctx, kubeClient, request.NamespacedName, &pvc)
+	originalPVCUID := pvc.UID
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, gameServer), &appsv1.Deployment{})
+
+	current := getGameServer(t, ctx, kubeClient, request.NamespacedName)
+	current.Spec.DisplayName = "Factory"
+	current.Generation++
+	if err := kubeClient.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var renamed appsv1.Deployment
+	get(t, ctx, kubeClient, workloadDeploymentKey(t, current), &renamed)
+	if renamed.Name != "zanven42-factory-factorio" {
+		t.Fatalf("renamed deployment = %q", renamed.Name)
+	}
+	if err := kubeClient.Get(ctx, client.ObjectKey{Namespace: gameServer.Namespace, Name: "zanven42-test-factorio"}, &appsv1.Deployment{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("previous slug Deployment still present: %v", err)
+	}
+	get(t, ctx, kubeClient, request.NamespacedName, &pvc)
+	if pvc.Name != gameServer.Name || pvc.UID != originalPVCUID {
+		t.Fatalf("rename changed PVC identity name=%q uid=%q", pvc.Name, pvc.UID)
+	}
 }
 
 func testGameServer(power plexusv1alpha1.DesiredPower) *plexusv1alpha1.GameServer {
@@ -1910,6 +2042,15 @@ func testGameServerForGame(power plexusv1alpha1.DesiredPower, gameID string, sch
 			},
 		},
 	}
+}
+
+func workloadDeploymentKey(t *testing.T, gameServer *plexusv1alpha1.GameServer) client.ObjectKey {
+	t.Helper()
+	name, err := workloadDeploymentName(gameServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client.ObjectKey{Namespace: gameServer.Namespace, Name: name}
 }
 
 func testReconciler(t *testing.T, objects ...client.Object) (*GameServerReconciler, client.Client) {

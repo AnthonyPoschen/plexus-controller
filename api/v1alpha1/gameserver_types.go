@@ -53,6 +53,17 @@ type GameServerSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	OwnerUserID string `json:"ownerUserID"`
 
+	// CustomerSlug is the operator-facing customer token used in the
+	// workload Deployment name (email local-part). The controller
+	// re-slugs and length-caps it. Empty falls back to a short owner id.
+	// +kubebuilder:validation:MaxLength=32
+	CustomerSlug string `json:"customerSlug,omitempty"`
+
+	// DisplayName is the customer Server name used in the workload
+	// Deployment name. The controller slugs and length-caps it.
+	// +kubebuilder:validation:MaxLength=64
+	DisplayName string `json:"displayName,omitempty"`
+
 	// DesiredPower is the customer's durable Running or Stopped intent.
 	DesiredPower DesiredPower `json:"desiredPower"`
 

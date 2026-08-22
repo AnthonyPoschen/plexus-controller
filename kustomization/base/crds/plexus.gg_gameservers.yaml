@@ -60,12 +60,25 @@ spec:
               computePlanID:
                 description: ComputePlanID references the purchased base node plan.
                 type: string
+              customerSlug:
+                description: |-
+                  CustomerSlug is the operator-facing customer token used in the
+                  workload Deployment name (email local-part). The controller
+                  re-slugs and length-caps it. Empty falls back to a short owner id.
+                maxLength: 32
+                type: string
               desiredPower:
                 description: DesiredPower is the customer's durable Running or Stopped
                   intent.
                 enum:
                 - Running
                 - Stopped
+                type: string
+              displayName:
+                description: |-
+                  DisplayName is the customer Server name used in the workload
+                  Deployment name. The controller slugs and length-caps it.
+                maxLength: 64
                 type: string
               highPerformance:
                 description: |-
