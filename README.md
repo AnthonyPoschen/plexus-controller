@@ -58,9 +58,12 @@ built from `Dockerfile` (`make docker-build`) and published as
 The Factorio GameServer workload uses the Plexus supervisor image built from
 `Dockerfile.factorio` (`make docker-build-factorio`) and published from this
 repository as `ghcr.io/anthonyposchen/plexus-factorio`. GameDefinition points
-at that image, not `factoriotools/factorio`. The supervisor is PID 1: it boots
-the already-placed save, retries unexpected game-process exits in-pod, and
-runs the Factorio graceful stop sequence on SIGTERM.
+at that image, not `factoriotools/factorio`. The supervisor is PID 1: it updates `/opt/factorio` through steamcmd with the
+optional platform Secret `plexus-steamcmd` (`username` / `password` →
+`STEAM_USERNAME` / `STEAM_PASSWORD`), boots the already-placed save, retries
+unexpected game-process exits in-pod, and runs the Factorio graceful stop
+sequence on SIGTERM. Missing credentials or a failed update still boot the
+image seed instead of crash-looping.
 
 Managed Factorio export additionally requires publishing
 `Dockerfile.save-exporter` and setting `PLEXUS_SAVE_EXPORTER_IMAGE` on the

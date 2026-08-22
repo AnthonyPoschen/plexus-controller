@@ -64,7 +64,8 @@ type Adapter struct {
 func (a Adapter) Name() string { return factoriov1.GameID }
 
 // UpdateOnBoot replaces the image seed with the latest dedicated-server build
-// of the selected channel before the game process starts.
+// of the selected channel before the game process starts. A failed steamcmd
+// update still boots the image seed when that binary is already present.
 func (a Adapter) UpdateOnBoot(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -74,7 +75,17 @@ func (a Adapter) UpdateOnBoot(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return a.updater().Update(ctx, channel)
+	if err := a.updater().Update(ctx, channel); err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
+		if seedBinaryExists(a.paths().Binary) {
+			fmt.Fprintf(os.Stderr, "game-supervisor: %v; booting image seed %s\n", err, a.paths().Binary)
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (a Adapter) GracePeriod() time.Duration {
@@ -195,7 +206,12 @@ func (a Adapter) updater() GameUpdater {
 	if a.Updater != nil {
 		return a.Updater
 	}
-	return SteamcmdUpdater{}
+	return SteamcmdUpdater{LookupEnv: a.LookupEnv}
+}
+
+func seedBinaryExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func (a Adapter) env(name string) (string, bool) {

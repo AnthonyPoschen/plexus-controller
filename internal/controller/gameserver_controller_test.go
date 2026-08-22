@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	plexusv1alpha1 "github.com/AnthonyPoschen/plexus-controller/api/v1alpha1"
+	"github.com/AnthonyPoschen/plexus-controller/internal/games"
 	factorio "github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/factorio/v1"
 	zomboid "github.com/AnthonyPoschen/plexus-controller/pkg/gamemanagement/projectzomboid/v1"
 )
@@ -1404,6 +1405,7 @@ func TestFactorioReconcileRendersCustomConfigurationAndSecretBackedEnvironment(t
 			t.Fatalf("%s environment = %#v", name, environment)
 		}
 	}
+	assertPlatformSteamcmdEnv(t, container.Env)
 	deploymentJSON, err := json.Marshal(deployment)
 	if err != nil {
 		t.Fatal(err)
@@ -1412,6 +1414,25 @@ func TestFactorioReconcileRendersCustomConfigurationAndSecretBackedEnvironment(t
 	for _, sensitive := range []string{secretValues.Username, secretValues.Token, secretValues.GamePassword, secretValues.RCONPassword} {
 		if strings.Contains(exposed, sensitive) {
 			t.Fatal("a sensitive fixture was exposed outside a Secret")
+		}
+	}
+}
+
+func TestFactorioPodMountsOptionalPlatformSteamcmdSecret(t *testing.T) {
+	ctx := context.Background()
+	gameServer := testGameServer(plexusv1alpha1.DesiredPowerRunning)
+	reconciler, kubeClient := testReconciler(t, gameServer)
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gameServer)}
+	reconcileTwice(t, ctx, reconciler, request)
+
+	var deployment appsv1.Deployment
+	get(t, ctx, kubeClient, request.NamespacedName, &deployment)
+	env := deployment.Spec.Template.Spec.Containers[0].Env
+	assertPlatformSteamcmdEnv(t, env)
+	for _, name := range []string{games.SteamUsernameEnv, games.SteamPasswordEnv} {
+		ref := findEnvironment(env, name).ValueFrom.SecretKeyRef
+		if ref.Name == "factorio-1-runtime-g1-r1" || ref.Key == "USERNAME" || ref.Key == "TOKEN" {
+			t.Fatalf("%s must not use customer Factorio.com credentials: %#v", name, ref)
 		}
 	}
 }
@@ -2236,6 +2257,24 @@ func assertPodTemplateRuntimeInputs(t *testing.T, template *corev1.PodTemplateSp
 		environment := findEnvironment(template.Spec.Containers[0].Env, name)
 		if environment == nil || environment.ValueFrom == nil || environment.ValueFrom.SecretKeyRef == nil || environment.ValueFrom.SecretKeyRef.Name != wantSecret {
 			t.Fatalf("pod template %s Secret reference = %#v, want %q", name, environment, wantSecret)
+		}
+	}
+}
+
+func assertPlatformSteamcmdEnv(t *testing.T, environment []corev1.EnvVar) {
+	t.Helper()
+	want := map[string]string{
+		games.SteamUsernameEnv: games.SteamcmdSecretUsernameKey,
+		games.SteamPasswordEnv: games.SteamcmdSecretPasswordKey,
+	}
+	for name, key := range want {
+		env := findEnvironment(environment, name)
+		if env == nil || env.Value != "" || env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
+			t.Fatalf("%s environment = %#v", name, env)
+		}
+		ref := env.ValueFrom.SecretKeyRef
+		if ref.Name != games.SteamcmdSecretName || ref.Key != key || ref.Optional == nil || *ref.Optional == false {
+			t.Fatalf("%s SecretKeyRef = %#v, want optional %s/%s", name, ref, games.SteamcmdSecretName, key)
 		}
 	}
 }

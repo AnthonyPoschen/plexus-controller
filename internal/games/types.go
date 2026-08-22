@@ -69,8 +69,18 @@ type WorkloadSpec struct {
 	SupportsMods     bool
 	WorkshopStartup  bool
 	Supervisor       bool
+	PlatformSteamcmd bool
 	AdditionalMounts []VolumeMount
 }
+
+// Platform SteamCMD Secret contract reused by later Steam games.
+const (
+	SteamcmdSecretName        = "plexus-steamcmd"
+	SteamcmdSecretUsernameKey = "username"
+	SteamcmdSecretPasswordKey = "password"
+	SteamUsernameEnv          = "STEAM_USERNAME"
+	SteamPasswordEnv          = "STEAM_PASSWORD"
+)
 
 type ConfigRuntime struct {
 	VolumeName      string
@@ -193,9 +203,10 @@ var Registry = map[string]GameDefinition{
 				InitName:        "factorio-config-init",
 				InitCopyCommand: "cp /plexus/config/server-settings.json /factorio/config/server-settings.json",
 			},
-			SecretEnvKeys: []string{"GAME_PASSWORD", "RCON_PASSWORD", "TOKEN", "USERNAME"},
-			SupportsMods:  true,
-			Supervisor:    true,
+			SecretEnvKeys:    []string{"GAME_PASSWORD", "RCON_PASSWORD", "TOKEN", "USERNAME"},
+			SupportsMods:     true,
+			Supervisor:       true,
+			PlatformSteamcmd: true,
 		},
 	},
 
